@@ -1,0 +1,16 @@
+python-dotenv==1.0.0
+ccxt
+pandas
+numpy
+tqdm
+scikit-learn
+lightgbm
+scipy
+ta
+matplotlib
+pytrends
+fredapi
+yfinance
+statsmodels
+seaborn
+pydantic
