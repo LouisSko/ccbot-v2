@@ -1,22 +1,15 @@
 """Concrete implementation of models."""
 
 import os
-from typing import Optional
+from typing import List
 
 import joblib
 import pandas as pd
 from lightgbm import LGBMClassifier
 
 from src.common_packages import create_logger
-from src.core.base import ObjectId
-from src.core.model import (
-    Model,
-    PredictionData,
-    PredictionResult,
-    PredictionResultSymbol,
-    TrainingData,
-    TrainingInformation,
-)
+from src.core.datasource import Data
+from src.core.model import Model, ModelSettings, Prediction, TrainingInformation
 
 # instantiate logger
 logger = create_logger(
@@ -33,14 +26,14 @@ class LgbmModelClf(Model):
         - blockingtimeseries splits
     """
 
-    def __init__(
-        self, object_id: ObjectId, depends_on: ObjectId, training_information: Optional[TrainingInformation] = None
-    ) -> None:
-        super().__init__(object_id, depends_on, training_information)
+    def __init__(self, config: ModelSettings) -> None:
+        super().__init__(config)
         self.model = LGBMClassifier(boosting_type="gbdt", n_jobs=-1, verbose=-1)
 
-    def load_model(self, path: str) -> None:
+    def load(self) -> None:
         """Load the model from disk."""
+
+        path = self.config.save_path_model
 
         if not os.path.exists(path):
             logger.error("Model file does not exist at %s", path)
@@ -49,12 +42,10 @@ class LgbmModelClf(Model):
         self.model = joblib.load(path)
         logger.info("Model successfully loaded from %s", path)
 
-    def _save_model(self, path: str):
+    def save(self):
         """Here the model gest loaded"""
 
-        if not path:
-            raise ValueError("Model path must be specified to save the model.")
-
+        path = self.config.save_path_model
         # Get the directory from the model path
         model_dir = os.path.dirname(path)
 
@@ -65,15 +56,14 @@ class LgbmModelClf(Model):
         joblib.dump(self.model, path)
         logger.info("Model saved to %s", path)
 
-    def _train(self, training_data: TrainingData) -> TrainingInformation:
+    def _train(self, training_data: Data) -> TrainingInformation:
         """Train the model with hyperparameter tuning."""
 
-        logger.info("Start hyperparameter tuning with RandomizedSearchCV...")
+        logger.info("Start training the model.")
 
-        # TODO: need to sort them in the right order
-        # bring the data in the right shape
-        x = pd.concat([data.features for data in training_data])
-        y = pd.concat([data.target for data in training_data])
+        data = pd.concat([data for data in training_data.data.values()]).sort_index()
+        x = data.drop(columns="target")
+        y = data["target"]
 
         # Fit the model with hyperparameter tuning
         self.model.fit(x, y)
@@ -81,7 +71,7 @@ class LgbmModelClf(Model):
         logger.info("Model training complete.")
 
         # get the training information
-        symbols = [data.symbols for data in training_data]
+        symbols = list(training_data.data.keys())
         train_start_date = min(x.index)
         train_end_date = max(x.index)
 
@@ -91,16 +81,20 @@ class LgbmModelClf(Model):
             train_end_date=train_end_date,
         )
 
-    def predict(self, prediction_data: PredictionData) -> PredictionResult:
+    def _predict(self, prediction_data: Data) -> List[Prediction]:
         """Function to make predictions."""
 
         result = []
 
-        for prediction_data_symbol in prediction_data:
+        for symbol, df in prediction_data.data.items():
 
-            y = self.model.predict(prediction_data_symbol.features)
-            y = y.reshape(-1, 1)
+            if "target" in df.columns:
+                df = df.drop(columns="target")
 
-            result.append(PredictionResultSymbol(symbol=prediction_data_symbol.symbol, predictions=y))
+            y_pred = self.model.predict(df)
+            # y_pred = y_pred.reshape(-1, 1)
 
-        return PredictionData(data=result)
+            # TODO: maybe add a date infromation
+            result.append(Prediction(symbol=symbol, predictions=y_pred))
+
+        return List[Prediction](data=result)
