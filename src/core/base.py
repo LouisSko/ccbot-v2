@@ -15,8 +15,8 @@ class ObjectId(BaseModel):
 class BaseConfiguration(BaseModel):
     """Base configuration for all objects."""
 
-    config_type: str = Field(description="Type of the configuration (e.g., model, preprocessor).")
-    object_id: ObjectId
+    config_type: str = Field(description="Type of the configuration (e.g., model, processor).")
+    object_id: ObjectId = Field(description="ID of the component to reference it.")
     resource_path: str = Field(description="Full path to the object's class or function.")
 
 
