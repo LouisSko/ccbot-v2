@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 import numpy as np
 import pandas as pd
@@ -88,3 +89,26 @@ class CustomJSONEncoder(json.JSONEncoder):
             return float(o)
 
         return super().default(o)
+
+
+def timestamp_decoder(obj: dict):
+    """Convert strings back to pd.Timestamp or pd.Timedelta during JSON decoding."""
+
+    # Regular expression to match Timedelta strings (e.g., "4h", "15min", "1d")
+    timedelta_pattern = re.compile(r"^(\d+)([a-z]+)$")
+
+    for key, value in obj.items():
+        if isinstance(value, str):
+            # Check if the value matches a Timedelta pattern (e.g., "4h", "15min", "1d")
+            match = timedelta_pattern.match(value)
+            if match:
+                # Convert to pd.Timedelta if it matches the pattern
+                obj[key] = pd.Timedelta(value)
+            else:
+                # If not a Timedelta pattern, try parsing as a Timestamp
+                try:
+                    obj[key] = pd.Timestamp(value, tz="utc")
+                except ValueError:
+                    # If it fails, leave it as a string
+                    pass
+    return obj
