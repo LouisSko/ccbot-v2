@@ -33,7 +33,7 @@ class LgbmModelClf(Model):
     def load(self) -> None:
         """Load the model from disk."""
 
-        path = self.config.save_path_model
+        path = os.path.join(self.config.data_directory, self.config.file_name_model)
 
         if not os.path.exists(path):
             logger.error("Model file does not exist at %s", path)
@@ -45,13 +45,11 @@ class LgbmModelClf(Model):
     def save(self):
         """Here the model gest loaded"""
 
-        path = self.config.save_path_model
-        # Get the directory from the model path
-        model_dir = os.path.dirname(path)
-
         # Create the directory if it doesn't exist
-        if not os.path.exists(model_dir):
-            os.makedirs(model_dir)
+        if not os.path.exists(self.config.data_directory):
+            os.makedirs(self.config.data_directory)
+
+        path = os.path.join(self.config.data_directory, self.config.file_name_model)
 
         joblib.dump(self.model, path)
         logger.info("Model saved to %s", path)

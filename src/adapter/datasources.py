@@ -23,7 +23,7 @@ class ExchangeDatasourceSettings(DatasourceSettings):
     """Settings for datasource"""
 
     exchange_id: str = "bitget"
-    timeframe: str = "1h"
+    timeframe: pd.Timedelta = pd.Timedelta("4h")
     current_data_scrape_limit: int = 29
 
 
@@ -113,7 +113,7 @@ class ExchangeDatasource(Datasource):
         """
 
         data = {}
-        for symbol, df in self.mock_data.items():
+        for symbol, df in self.mock_data.data.items():
             if symbols is None or symbol in symbols:
                 data[symbol] = df.loc[: self.simulation_current_date].iloc[:-1].copy()
 
@@ -173,7 +173,7 @@ class ExchangeDatasource(Datasource):
         start: Optional[pd.Timestamp] = None,
         end: Optional[pd.Timestamp] = None,
         limit: Optional[int] = None,
-        timeframe: Optional[str] = None,
+        timeframe: Optional[pd.Timedelta] = None,
     ) -> Data:
         """Fetch historical OHLCV data for multiple symbols within a specified timeframe in parallel.
 
@@ -182,7 +182,7 @@ class ExchangeDatasource(Datasource):
             start (pd.Timestamp): Start timestamp.
             end (Optional[pd.Timestamp]): End timestamp.
             limit (Optional[int]): Number of entries to fetch
-            timeframe (Optional[str]): Optionally provide a timeframe, e.g. 1m, 5m, 1h, 1d,..
+            timeframe (Optional[pd.Timedelta]): Optionally provide a timeframe, e.g. 1m, 5m, 1h, 1d,..
 
         Returns:
             Dict[str, pd.DataFrame]: Dict of dataframes containing formatted OHLCV data for all symbols.
@@ -238,7 +238,7 @@ class ExchangeDatasource(Datasource):
         start: Optional[pd.Timestamp] = None,
         end: Optional[pd.Timestamp] = None,
         limit: Optional[int] = None,
-        timeframe: Optional[str] = None,
+        timeframe: Optional[pd.Timedelta] = None,
         max_retries: int = 5,
         retry_delay: float = 1.0,
     ) -> np.ndarray:
@@ -250,7 +250,7 @@ class ExchangeDatasource(Datasource):
             start (pd.Timestamp): Start timestamp.
             end (Optional[pd.Timestamp]): End timestamp.
             limit (Optional[int]): Number of entries to fetch
-            timeframe (Optional[str]): Optionally provide a timeframe
+            timeframe (Optional[pd.Timedelta]): Optionally provide a timeframe
             max_retries (int): Maximum number of retries in case of failure.
             retry_delay (float): Delay between retries in seconds.
 
@@ -262,6 +262,7 @@ class ExchangeDatasource(Datasource):
         """
 
         timeframe = timeframe or self.config.timeframe
+        timeframe = extract_timedelta_str(timeframe)
 
         if start is not None:
             since = int(start.timestamp()) * 1000
@@ -369,3 +370,28 @@ class ExchangeDatasource(Datasource):
         )
 
         return df
+
+
+def extract_timedelta_str(timedelta: pd.Timedelta) -> str:
+    """extracts the string from a timedelta object.
+
+    # Examples
+    td_4h = pd.Timedelta("4h")
+    td_15min = pd.Timedelta("15min")
+    td_1d = pd.Timedelta("1d")
+
+    print(extract_timedelta_str(td_4h))   # Output: "4h"
+    print(extract_timedelta_str(td_15min))  # Output: "15m"
+    print(extract_timedelta_str(td_1d))    # Output: "1d"
+    """
+
+    components = timedelta.components
+
+    if components.days > 0:
+        return f"{components.days}d"
+    elif components.hours > 0:
+        return f"{components.hours}h"
+    elif components.minutes > 0:
+        return f"{components.minutes}m"
+    else:
+        raise ValueError("No valid format.")
