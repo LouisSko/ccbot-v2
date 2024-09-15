@@ -82,10 +82,14 @@ class TargetGenerator(BasePipelineComponent):
         """Returns the configuration of the class."""
 
         resource_path = f"{self.__module__}.{self.__class__.__name__}"
+        config_path = f"{DataProcessorConfiguration.__module__}.{DataProcessorConfiguration.__name__}"
+        settings_path = f"{self.config.__module__}.{self.config.__class__.__name__}"
 
         return DataProcessorConfiguration(
             object_id=self.config.object_id,
             resource_path=resource_path,
+            config_path=config_path,
+            settings_path=settings_path,
             settings=self.config,
         )
 
@@ -111,10 +115,14 @@ class FeatureGenerator(BasePipelineComponent):
         """Returns the configuration of the class."""
 
         resource_path = f"{self.__module__}.{self.__class__.__name__}"
+        config_path = f"{DataProcessorConfiguration.__module__}.{DataProcessorConfiguration.__name__}"
+        settings_path = f"{self.config.__module__}.{self.config.__class__.__name__}"
 
         return DataProcessorConfiguration(
             object_id=self.config.object_id,
             resource_path=resource_path,
+            config_path=config_path,
+            settings_path=settings_path,
             settings=self.config,
         )
 
@@ -167,13 +175,17 @@ class Merger(BasePipelineComponent):
 
         return Data(object_ref=self.config.object_id, data=merged_data)
 
-    def create_configuration(self) -> DataProcessorConfiguration:
+    def create_configuration(self) -> MergerConfiguration:
         """Returns the configuration of the class."""
 
         resource_path = f"{self.__module__}.{self.__class__.__name__}"
+        config_path = f"{MergerConfiguration.__module__}.{MergerConfiguration.__name__}"
+        settings_path = f"{self.config.__module__}.{self.config.__class__.__name__}"
 
-        return DataProcessorConfiguration(
+        return MergerConfiguration(
             object_id=self.config.object_id,
             resource_path=resource_path,
+            config_path=config_path,
+            settings_path=settings_path,
             settings=self.config,
         )
