@@ -1,6 +1,10 @@
 """ This module defines the logging component."""
 
+import json
 import logging
+
+import numpy as np
+import pandas as pd
 
 
 def create_logger(log_level: str, logger_name: str = "custom_logger"):
@@ -44,3 +48,43 @@ def create_logger(log_level: str, logger_name: str = "custom_logger"):
     logger.addHandler(console_handler)
 
     return logger
+
+
+class CustomJSONEncoder(json.JSONEncoder):
+    """Class for serializing timestamps."""
+
+    def default(self, o):
+        """Override the default method to serialize timestamps.
+
+        Args:
+            obj: The object to serialize.
+
+        Returns:
+
+            str: The serialized object.
+        """
+
+        if isinstance(o, pd.Timestamp):
+            if o.tzinfo is not None:
+                # Serialize with timezone information
+                return o.isoformat()
+            else:
+                # Serialize without timezone information
+                return o.strftime("%Y-%m-%d %H:%M:%S")
+
+        if isinstance(o, pd.Timedelta):
+            # Serialize Timedelta as a string in "Xd", "Xh", "Xm", etc.
+            seconds = o.total_seconds()
+            if seconds % 86400 == 0:  # 86400 seconds in a day
+                return f"{int(seconds // 86400)}d"
+            elif seconds % 3600 == 0:
+                return f"{int(seconds // 3600)}h"
+            elif seconds % 60 == 0:
+                return f"{int(seconds // 60)}m"
+            else:
+                return f"{seconds}s"
+
+        if isinstance(o, np.float32):
+            return float(o)
+
+        return super().default(o)
