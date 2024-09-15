@@ -5,13 +5,13 @@ from abc import abstractmethod
 from importlib import import_module
 from typing import List, Optional, Type
 
-import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from src.common_packages import CustomJSONEncoder
 from src.core.base import BaseConfiguration, BasePipelineComponent
-from src.core.model import BaseModelConfiguration, Model
-from src.core.preprocessor import MergePreprocessorConfiguration, PreprocessorConfiguration
+from src.core.model import Model, ModelConfiguration
+from src.core.processor import DataProcessorConfiguration, MergerConfiguration
 
 
 class PipelineConfig(BaseModel):
@@ -25,7 +25,7 @@ class Trade(BaseModel):
 
     time: pd.Timestamp = Field(..., description="Timestamp of the trade")
     symbol: str = Field(..., description="Trading symbol, e.g., 'BTC/USDT'")
-    position_type: str = Field(..., description="Type of position: either 'buy' or 'sell'")
+    position_side: str = Field(..., description="Type of position: either 'buy' or 'sell'")
     order_type: str = Field(..., description="Type of order: either 'limit' or 'market'")
     limit_price: Optional[float] = Field(None, description="Limit price for the trade (optional for market orders)")
     stop_loss_price: Optional[float] = Field(None, description="Stop loss price (optional)")
@@ -112,46 +112,6 @@ def load_pipeline(file_path: str) -> Pipeline:
     return Pipeline(config=config)
 
 
-class CustomJSONEncoder(json.JSONEncoder):
-    """Class for serializing timestamps."""
-
-    def default(self, o):
-        """Override the default method to serialize timestamps.
-
-        Args:
-            obj: The object to serialize.
-
-        Returns:
-
-            str: The serialized object.
-        """
-
-        if isinstance(o, pd.Timestamp):
-            if o.tzinfo is not None:
-                # Serialize with timezone information
-                return o.isoformat()
-            else:
-                # Serialize without timezone information
-                return o.strftime("%Y-%m-%d %H:%M:%S")
-
-        if isinstance(o, pd.Timedelta):
-            # Serialize Timedelta as a string in "Xd", "Xh", "Xm", etc.
-            seconds = o.total_seconds()
-            if seconds % 86400 == 0:  # 86400 seconds in a day
-                return f"{int(seconds // 86400)}d"
-            elif seconds % 3600 == 0:
-                return f"{int(seconds // 3600)}h"
-            elif seconds % 60 == 0:
-                return f"{int(seconds // 60)}m"
-            else:
-                return f"{seconds}s"
-
-        if isinstance(o, np.float32):
-            return float(o)
-
-        return super().default(o)
-
-
 def timestamp_decoder(obj: dict):
     """Convert strings back to pd.Timestamp during JSON decoding."""
 
@@ -175,14 +135,15 @@ def configuration_factory(config_dict: dict) -> BaseConfiguration:
     Returns:
         BaseConfiguration: The appropriate configuration object.
     """
+    
     config_type = config_dict.get("config_type")
 
     if config_type == "model":
-        return TypeAdapter(BaseModelConfiguration).validate_python(config_dict)
-    if config_type == "preprocessor":
-        return TypeAdapter(PreprocessorConfiguration).validate_python(config_dict)
-    if config_type == "merge_preprocessor":
-        return TypeAdapter(MergePreprocessorConfiguration).validate_python(config_dict)
+        return TypeAdapter(ModelConfiguration).validate_python(config_dict)
+    if config_type == "processor":
+        return TypeAdapter(DataProcessorConfiguration).validate_python(config_dict)
+    if config_type == "merger":
+        return TypeAdapter(MergerConfiguration).validate_python(config_dict)
 
     raise ValueError(f"Unknown config_type: {config_type}")
 
@@ -191,7 +152,7 @@ def load_component_from_configuration(config: BaseConfiguration) -> BasePipeline
     """Create an instance of a PipelineComponent based on the provided configuration.
 
     Args:
-        config (BaseModelConfiguration): The configuration object to create the model instance.
+        config (ModelConfiguration): The configuration object to create the model instance.
     """
 
     module_path, class_name = config.resource_path.rsplit(".", 1)
