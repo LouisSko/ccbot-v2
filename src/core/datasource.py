@@ -43,8 +43,9 @@ class DatasourceSettings(BaseModel):
     # TODO: maybe unify scrape start date and mock start date
     object_id: ObjectId
     symbols: Optional[List[str]] = None
+    data_directory: Optional[str] = None  # path to the directory where the mock data is stored
     use_mock_data: bool = False
-    mock_data_path: Optional[str] = None
+    mock_data_file_name: Optional[str] = None
     scrape_start_date: Optional[pd.Timestamp] = None
     scrape_end_date: Optional[pd.Timestamp] = None
     mock_data_start_date: Optional[pd.Timestamp] = None
@@ -63,6 +64,7 @@ class DatasourceConfiguration(BaseConfiguration):
         Literal=True,
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
+
     settings: DatasourceSettings
 
 
@@ -136,7 +138,15 @@ class Datasource(BasePipelineComponent):
         if hasattr(self, "mock_data") and self.mock_data:
             logger.info("Mock data already loaded.")
         else:
-            self.mock_data = self.load_mock_data() if self.config.mock_data_path else self.create_mock_data()
+
+            mock_data_path = os.path.join(self.config.data_directory, self.config.mock_data_file_name)
+            # check if the mock data file exists
+            if os.path.exists(mock_data_path):
+                logger.info("Found existing mock data.")
+                self.mock_data = self.load_mock_data()
+            else:
+                logger.info("Create new mock data.")
+                self.mock_data = self.create_mock_data()
 
         # Process symbol-specific data dates
         symbol_dates = [data.index for data in self.mock_data.data.values() if not data.empty]
@@ -171,7 +181,7 @@ class Datasource(BasePipelineComponent):
             file_path (Optional[str]): Path to the joblib file containing mock data. If not provided, the path specified in the config will be used.
         """
 
-        joblib_file_path = file_path or self.config.mock_data_path
+        joblib_file_path = file_path or os.path.join(self.config.data_directory, self.config.mock_data_file_name)
 
         logger.info("Evaluation is turned on. Load historic mock dataset from: %s", joblib_file_path)
 
@@ -196,15 +206,23 @@ class Datasource(BasePipelineComponent):
             file_path (str): Path to the joblib file where the data will be saved.
         """
 
-        joblib_file_path = file_path or self.config.mock_data_path
+        data_file_path = file_path or os.path.join(self.config.data_directory, self.config.mock_data_file_name)
+
+        # Get the directory from the model path
+        data_dir = os.path.dirname(data_file_path)
+
+        # Create the directory if it doesn't exist
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+            logger.info("Directory does not exist. Create a new one.")
 
         # Reset index to ensure the timestamp is included in the saved DataFrame
-        for symbol, df in data.data.items():
-            data[symbol] = df.reset_index()
+        # for df in data.data.values():
+        #    df = df.reset_index()
 
-        joblib.dump(data, joblib_file_path)
+        joblib.dump(data, data_file_path)
 
-        logger.info("Mock data saved to %s", joblib_file_path)
+        logger.info("Mock data saved to %s", data_file_path)
 
     def create_mock_data(self, symbols: Optional[List[str]] = None) -> Data:
         """Create mock data by scraping historical data."""
@@ -226,9 +244,13 @@ class Datasource(BasePipelineComponent):
         """Returns the configuration of the class."""
 
         resource_path = f"{self.__module__}.{self.__class__.__name__}"
+        config_path = f"{DatasourceConfiguration.__module__}.{DatasourceConfiguration.__name__}"
+        settings_path = f"{self.config.__module__}.{self.config.__class__.__name__}"
 
         return DatasourceConfiguration(
             object_id=self.config.object_id,
             resource_path=resource_path,
+            config_path=config_path,
+            settings_path=settings_path,
             settings=self.config,
         )

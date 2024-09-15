@@ -26,7 +26,8 @@ class ModelSettings(BaseModel):
 
     object_id: ObjectId
     depends_on: ObjectId  # ID of the processor this model depends on.
-    save_path_model: str
+    data_directory: str  # directory where the data is getting saved
+    file_name_model: str  # file name of the model
     training_information: Optional[TrainingInformation] = None
 
 
@@ -39,7 +40,7 @@ class ModelConfiguration(BaseConfiguration):
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
 
-    config: ModelSettings
+    settings: ModelSettings
 
 
 class Prediction(BaseModel):
@@ -107,9 +108,13 @@ class Model(BasePipelineComponent):
         """Returns the configuration of the class."""
 
         resource_path = f"{self.__module__}.{self.__class__.__name__}"
+        config_path = f"{ModelConfiguration.__module__}.{ModelConfiguration.__name__}"
+        settings_path = f"{self.config.__module__}.{self.config.__class__.__name__}"
 
         return ModelConfiguration(
             object_id=self.config.object_id,
             resource_path=resource_path,
+            config_path=config_path,
+            settings_path=settings_path,
             settings=self.config,
         )
