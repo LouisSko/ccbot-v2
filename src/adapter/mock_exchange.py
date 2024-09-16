@@ -3,22 +3,26 @@
 import json
 import os
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from typing import Dict, List, Optional, Union
 
 import ccxt
 import joblib
 import pandas as pd
-from ccxt import Exchange
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic.config import ConfigDict
 
-from src.common_packages import CustomJSONEncoder, create_logger
+from src.adapter.datasources import ExchangeDatasource, ExchangeDatasourceSettings
+from src.common_packages import CustomJSONEncoder, create_logger, timestamp_decoder
+from src.core.base import BaseConfiguration, ObjectId
+from src.core.datasource import Data
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),
     logger_name=__name__,
 )
 
+MOCK_DATA_FILE = "mock_exchange.joblib"
 CONFIG_FILE = "config.json"
 
 
@@ -30,10 +34,10 @@ class MockExchangeSettings(BaseModel):
         data_path (Optional[str]):
             Path to the directory or file where the mock data is stored.
 
-        simulation_start (Union[str, pd.Timestamp]):
+        simulation_start_date (pd.Timestamp):
             The start time for the simulation.
 
-        simulation_end (Union[str, pd.Timestamp]):
+        simulation_end_date (pd.Timestamp):
             The end time for the simulation.
 
         timeframe (str):
@@ -46,180 +50,148 @@ class MockExchangeSettings(BaseModel):
         symbols (List[str]):
             A list of trading symbols (e.g., ['BTC/USD', 'ETH/USD']) that the
             simulation will operate on.
-
-    Example:
-        # Create instance from JSON file
-        config = MockExchangeConfig.from_json('path/to/config.json')
     """
 
-    data_path: Optional[str] = None
-    scrape_start: Optional[pd.Timestamp] = None
-    scrape_end: Optional[pd.Timestamp] = None
-    simulation_start: pd.Timestamp
-    simulation_end: pd.Timestamp
-    exchange_id: str = "bitget"
+    object_id: ObjectId
+    data_directory: str
+    simulation_start_date: pd.Timestamp
+    simulation_end_date: pd.Timestamp  # TODO: Simulation End date is not used anywhere
+    scrape_start_date: pd.Timestamp
+    scrape_end_date: Optional[pd.Timestamp] = None
     timeframe: pd.Timedelta = pd.Timedelta("4h")
-    config_dir: Optional[str] = None
-    symbols: List[str]
+    symbols: Optional[List[str]] = None
+
+    exchange_config: Dict  # those are the actual values used for initialising a real ccxt exchangee
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
+class MockExchangeConfiguration(BaseConfiguration):
+    """Configuration specific to a model."""
 
-class MockExchange(bitget):
-    def __init__(exchange_config: Dict, config: MockExchangeSettings)
-        
+    component_type: str = Field(
+        default="mock_exchange",
+        Literal=True,
+        description="Type of the configuration (e.g., model, processor). Do not change this value",
+    )
+
+    settings: MockExchangeSettings
 
 
-
-
-
-
-
-class MockExchange:
-    """Mock class to simulate interaction with an exchange API via ccxt interface."""
+# TODO: Hardcoded value for the exchange.
+class MockExchange(ccxt.bitget):
+    """Mock exchange class for bitget."""
 
     def __init__(self, config: MockExchangeSettings):
-        """Initialize the MockExchange object with data from a specified file path.
 
-        Args:
-            data_path (str): Path to the joblib file containing the data.
-        """
-
+        super().__init__(config.exchange_config)
         self.config = config
-        exchange_class = getattr(ccxt, self.config.exchange_id)
-        self.exchange = exchange_class(
-            {
-                # "apiKey": env_parser.EX_API_KEY,
-                # "secret": env_parser.SECRET_KEY,
-                # "password": env_parser.PASSWORD,
-                "options": {"defaultType": "swap"},
-                "timeout": 30000,
-                "enableRateLimit": True,
-            }
-        )
-
-        # scrape taker and maker fees for each coin
-        self.order_fees = {}
-        self.exchange.load_markets()
-        for symbol in self.config.symbols:
-            market_info = self.exchange.market(symbol)
-            self.order_fees[symbol] = {
-                "maker": market_info["maker"],
-                "taker": market_info["taker"],
-            }
-            logger.info("Fetched order details for symbol %s. %s", symbol, self.order_fees[symbol])
 
         self.positions = {}
         self.pending_orders = []
+        self.trade_history = []
 
         # Initialize balance
         self.balance_total = 1000
         self.balance_free = self.balance_total
         self.locked_balance = 0.0  # Balance reserved for limit orders
 
-        self.trade_history = []
-
-        self.data = self._load_mock_data(self.config.data_path)
-
-        # first and last date of the mock data
-        self.config.scrape_end = max([max(df.index) for df in self.data.values()])
-        self.config.scrape_start = min([min(df.index) for df in self.data.values()])
-        self.config.simulation_end = min(self.config.simulation_end, self.config.scrape_end)
         self.current_date = None
         self.current_data = None
 
-        # Ensure 'close' column is present in all DataFrames
-        for symbol, df in self.data.items():
+        self.data = None
+
+        if os.path.exists(os.path.join(self.config.data_directory, MOCK_DATA_FILE)):
+            self.load_mock_data()
+
+        self.order_fees = self._get_order_fees()
+
+    def _get_order_fees(self) -> Dict:
+        """get the order fee structure for the exchange."""
+
+        order_fees = {}
+        self.load_markets()
+        for symbol in self.config.symbols:
+            market_info = self.market(symbol)
+            order_fees[symbol] = {
+                "maker": market_info["maker"],
+                "taker": market_info["taker"],
+            }
+            logger.info("Fetched order details for symbol %s. %s", symbol, order_fees[symbol])
+
+        return order_fees
+
+    def create_and_save_mock_data(self):
+        """Function that creates and stores the mock data."""
+
+        # create an exchange datasource and fetch the data and store it.
+        ex_ds_config = ExchangeDatasourceSettings(
+            object_id=ObjectId(value="mock_exchange_datasource"),
+            exchange_id="bitget",
+            symbols=self.config.symbols,
+            scrape_start_date=self.config.scrape_start_date,
+            scrape_end_date=self.config.scrape_end_date,
+            timeframe=self.config.timeframe,
+        )
+
+        exchange_datasource = ExchangeDatasource(ex_ds_config)
+
+        mock_data = exchange_datasource.scrape_data_historic()
+
+        mock_data_path = os.path.join(self.config.data_directory, MOCK_DATA_FILE)
+        exchange_datasource.save_mock_data(mock_data, mock_data_path)
+
+    def load_mock_data(self) -> None:
+        """Load mock data from a joblib file."""
+
+        joblib_file = os.path.join(self.config.data_directory, MOCK_DATA_FILE)
+
+        if not os.path.exists(joblib_file):
+            logger.error("Data file does not exist at %s", joblib_file)
+            raise ValueError("Mock data needs to get created first.")
+
+        logger.info("Loading historic mock dataset from: %s", joblib_file)
+
+        data: Data = joblib.load(joblib_file)
+
+        # Ensure that each entry is a DataFrame and set the index correctly
+        for symbol, df in data.data.items():
+            if not isinstance(df, pd.DataFrame):
+                raise ValueError(f"The data for {symbol} is not a pandas DataFrame.")
             if "close" not in df.columns:
                 raise ValueError(f"Data for symbol {symbol} does not contain 'close' column")
 
-    def save_config(self, config_dir: Optional[str] = None):
-        """Function to create a configuration file.
-
-        Args:
-            config_dir (optional[str]): Optionally provide a config directory to save the results
-        """
-
-        config = self.get_config()
-        metadata = {
-            "init_params": config.get("init_params", {}),
-        }
-
-        self._write_config(metadata, config_dir)
-
-    def get_config(self) -> dict:
-        """Returns the configuration of the class.
-
-        Returns:
-            dict: A dictionary containing the configuration.
-        """
-
-        return {"init_params": asdict(self.config)}
-
-    def _write_config(self, metadata: Dict, config_dir: Optional[str] = None):
-        """Save the metadata to a file.
-
-        Args:
-        metadata (Dict): Configuration to store.
-        config_dir (str): File directory to store the configuration.
-        """
-
-        config_dir = config_dir or self.config.config_dir
-        if config_dir is None:
-            raise ValueError("Please provide a configuration directory via config_dir.")
-
-        info_file_path = os.path.join(config_dir, CONFIG_FILE)
-        with open(info_file_path, "w", encoding="utf-8") as info_file:
-            json.dump(metadata, info_file, indent=4, cls=CustomJSONEncoder)
-
-        logger.info("Mock exchange information saved to %s", config_dir)
-
-    def _set_data(self):
-        """Set the data"""
-
-        # set current data based on the current date
-        self.current_data = {symbol: df[df.index == self.current_date] for symbol, df in self.data.items()}
-        # if any(df.empty for df in self.current_data.values()):
-        #    raise ValueError(f"No data available for the date: {self.current_date}")
-
-    def _next_step(self):
-        """set the next date and data"""
-
-        if self.current_date is None:
-            self.current_date = self.config.simulation_start
-        else:
-            # set current date
-            self.current_date += pd.Timedelta(self.config.timeframe)
-
-        self._set_data()
-
-    def _load_mock_data(self, joblib_file: str) -> Dict[str, pd.DataFrame]:
-        """Load mock data from a joblib file.
-
-        Args:
-            joblib_file (str): Path to the joblib file containing mock data.
-
-        Returns:
-            Dict[str, pd.DataFrame]: Dictionary containing mock data with timestamps as index.
-
-        Raises:
-            ValueError: If the data for any symbol is not a pandas DataFrame.
-        """
-        logger.info("Loading historic mock dataset from: %s", joblib_file)
-
-        data_dict = joblib.load(joblib_file)
-
-        # Ensure that each entry is a DataFrame and set the index correctly
-        for symbol, df in data_dict.items():
-            if not isinstance(df, pd.DataFrame):
-                raise ValueError(f"The data for {symbol} is not a pandas DataFrame.")
-            df["time"] = pd.to_datetime(df["time"], utc=True)
-            df.set_index("time", inplace=True)
-            data_dict[symbol] = df
+        self.data = data
 
         logger.info("Exchange mock data loaded successfully.")
-        return data_dict
 
-    def _save_trade_history(self, path: str) -> None:
+        self._next_step()
+
+    def _create_configuration(self) -> MockExchangeConfiguration:
+        """Returns the configuration of the class."""
+
+        resource_path = f"{self.__module__}.{self.__class__.__name__}"
+
+        return MockExchangeConfiguration(
+            object_id=self.config.object_id,
+            resource_path=resource_path,
+            settings=self.config,
+        )
+
+    def export_config(self) -> None:
+        """Export configuration as a json file."""
+
+        # TODO: think about whether this is necessary
+        # config = self._create_configuration()
+
+        file_path = os.path.join(self.config.data_directory, CONFIG_FILE)
+
+        with open(file_path, "w", encoding="utf8") as file:
+            json.dump(self.config.model_dump(), file, indent=4, cls=CustomJSONEncoder)
+
+        logger.info("Configuration stored at %s", file_path)
+
+    def save_trade_history(self, path: str) -> None:
         """Save the trade history to a specified file path.
 
         Args:
@@ -229,6 +201,20 @@ class MockExchange:
         with open(path, "w", encoding="utf8") as file:
             json.dump(self.trade_history, file, indent=4, default=str)
         logger.info("Trade history saved to: %s", path)
+
+    def _next_step(self):
+        """set the next date and data"""
+
+        if self.current_date is None:
+            self.current_date = self.config.simulation_start_date
+        else:
+            # set current date
+            self.current_date += self.config.timeframe
+
+        # set current data based on the current date
+        self.current_data = {symbol: df[df.index == self.current_date] for symbol, df in self.data.data.items()}
+
+        logger.info("Simulation current date %s", self.current_date)
 
     def _check_limit_orders(self) -> None:
         """Check all pending limit orders to see if they should be executed."""
@@ -372,25 +358,53 @@ class MockExchange:
             logger.warning("No data for symbol: %s on date: %s", symbol, self.current_date)
             return {}
 
-    # the following functions are implemented in ccxt
-
-    def load_markets(self):
-        """Mock function for loading markets."""
-
-        return self.exchange.load_markets()
-
-    def market(self, symbol: str) -> dict:
-        """mock market information.
+    def _create_position(self, symbol: str, order: dict) -> None:
+        """Helper function to open a position.
 
         Args:
-            symbol (str): symbol to scrape market information
-
-        Returns:
-            dict: dictionary containing the information.
-
+        symbol (str): symbol such as "BTC/USDT:USDT"
+        order (dict); the order for which a position should be created.
         """
 
-        return self.exchange.market(symbol)
+        order_type = order.get("order_type")
+        if order_type == "market":
+            entry_price = self.fetch_ticker(symbol)["last"]
+            amount_usd = entry_price * order["total"]
+        elif order_type == "limit":
+            entry_price = order.get("price")
+            # If it's a limit order, reduce the reserved balance when the order is filled
+            reserved_amount = entry_price * order["total"]
+            self.locked_balance -= reserved_amount
+            amount_usd = 0  # thats why we set the amount_usd to 0 because the capital got locked already
+
+        # calculate fee
+        fee = (
+            self.order_fees.get(symbol).get("maker")
+            if order_type == "limit"
+            else self.order_fees.get(symbol).get("taker")
+        )
+        fee_amount_usd_opening = amount_usd * fee
+
+        position = {
+            "entry_price": entry_price,
+            "open_date": self.current_date,
+            "opening_fee": fee_amount_usd_opening,
+        }
+
+        position.update(order)
+
+        # update balance
+        self.balance_total -= fee_amount_usd_opening
+        self.balance_free = self.balance_free - fee_amount_usd_opening - amount_usd
+        self.balance_total = round(self.balance_total, 3)
+        self.balance_free = round(self.balance_free, 3)
+
+        # assert self.balance_free >= 0
+
+        # add to position
+        self.positions[symbol] = position
+
+    ####### the following functions are implemented in ccxt #######
 
     def fetch_ticker(self, symbol: str) -> Dict[str, float]:
         """Fetch the ticker data for a given symbol at the current date.
@@ -421,6 +435,7 @@ class MockExchange:
         Returns:
             List[Dict[str, Union[str, float]]]: A list of dictionaries containing open position details.
         """
+
         return [{"symbol": symbol, "info": info} for symbol, info in self.positions.items()]
 
     def fetch_position(self, symbol: str) -> Dict[str, Union[str, float]]:
@@ -432,6 +447,7 @@ class MockExchange:
         Returns:
             Dict[str, Union[str, float]]: A dictionary containing the position details.
         """
+
         return {"symbol": symbol, "info": self.positions.get(symbol, {})}
 
     def create_order(
@@ -487,52 +503,6 @@ class MockExchange:
             )
 
         return order
-
-    def _create_position(self, symbol: str, order: dict) -> None:
-        """Helper function to open a position.
-
-        Args:
-        symbol (str): symbol such as "BTC/USDT:USDT"
-        order (dict); the order for which a position should be created.
-        """
-
-        order_type = order.get("order_type")
-        if order_type == "market":
-            entry_price = self.fetch_ticker(symbol)["last"]
-            amount_usd = entry_price * order["total"]
-        elif order_type == "limit":
-            entry_price = order.get("price")
-            # If it's a limit order, reduce the reserved balance when the order is filled
-            reserved_amount = entry_price * order["total"]
-            self.locked_balance -= reserved_amount
-            amount_usd = 0  # thats why we set the amount_usd to 0 because the capital got locked already
-
-        # calculate fee
-        fee = (
-            self.order_fees.get(symbol).get("maker")
-            if order_type == "limit"
-            else self.order_fees.get(symbol).get("taker")
-        )
-        fee_amount_usd_opening = amount_usd * fee
-
-        position = {
-            "entry_price": entry_price,
-            "open_date": self.current_date,
-            "opening_fee": fee_amount_usd_opening,
-        }
-
-        position.update(order)
-
-        # update balance
-        self.balance_total -= fee_amount_usd_opening
-        self.balance_free = self.balance_free - fee_amount_usd_opening - amount_usd
-        self.balance_total = round(self.balance_total, 3)
-        self.balance_free = round(self.balance_free, 3)
-
-        # assert self.balance_free >= 0
-
-        # add to position
-        self.positions[symbol] = position
 
     def close_position(
         self,
@@ -670,9 +640,6 @@ class MockExchange:
         Args:
             order_ids (List[str]): List of IDs of the orders to cancel.
             symbol (str): The trading symbol for the orders.
-
-        Returns:
-            None
         """
 
         orders_to_remove = [
@@ -693,17 +660,28 @@ class MockExchange:
 
         logger.info("Canceled %d orders for symbol %s", len(orders_to_remove), symbol)
 
-    def cancel_all_orders(self, symbol: str, params: Optional[Dict] = None):
+    def cancel_all_orders(self, symbol: str, params: Optional[Dict] = None) -> None:
         """Cancels all orders for a specific symbol.
 
         Args:
             symbol (str): symbol for which the orders should be cancelled.
-
-        Returns:
-            None
         """
 
         existing_orders = self.fetch_open_orders(symbol=symbol)
         ids_to_delete = [order["id"] for order in existing_orders]
         # Cancel each open order for the specific symbol
         self.cancel_orders(ids_to_delete, symbol=symbol)
+
+
+def load_mock_exchange(file_path: str) -> MockExchange:
+    """Create a mock exchange object based on a stored configuration json
+    Args:
+        file_path (str): File directory of the configuration.
+    """
+
+    with open(file_path, "r", encoding="utf8") as f:
+        config = json.load(f, object_hook=timestamp_decoder)
+
+    config = TypeAdapter(MockExchangeSettings).validate_python(config)
+
+    return MockExchange(config=config)
