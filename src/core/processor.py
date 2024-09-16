@@ -31,7 +31,7 @@ class DataProcessorSettings(BaseModel):
 class DataProcessorConfiguration(BaseConfiguration):
     """Configuration for processors that are classifiers with init parameters."""
 
-    config_type: str = Field(
+    component_type: str = Field(
         default="processor",
         Literal=True,
         description="Type of the configuration (e.g., model, processor). Do not change this value",
@@ -39,7 +39,7 @@ class DataProcessorConfiguration(BaseConfiguration):
     settings: DataProcessorSettings
 
 
-class MergerSettings(BaseModel):
+class DataMergerSettings(BaseModel):
     """Configuration settings for the data merger."""
 
     object_id: ObjectId
@@ -49,13 +49,13 @@ class MergerSettings(BaseModel):
 class MergerConfiguration(BaseConfiguration):
     """Configuration for a merger that combines the output of multiple processors."""
 
-    config_type: str = Field(
+    component_type: str = Field(
         default="merger",
         Literal=True,
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
 
-    settings: MergerSettings
+    settings: DataMergerSettings
 
 
 class TargetGenerator(BasePipelineComponent):
@@ -73,7 +73,7 @@ class TargetGenerator(BasePipelineComponent):
 
         pass
 
-    def __call__(self, data: Data) -> Data:
+    def process(self, data: Data) -> Data:
         """Allows the instance to be called as a function."""
 
         return self.create_target(data)
@@ -106,7 +106,7 @@ class FeatureGenerator(BasePipelineComponent):
 
         pass
 
-    def __call__(self, data: Data) -> Data:
+    def process(self, data: Data) -> Data:
         """Allows the instance to be called as a function."""
 
         return self.create_features(data)
@@ -127,10 +127,10 @@ class FeatureGenerator(BasePipelineComponent):
         )
 
 
-class Merger(BasePipelineComponent):
+class DataMerger(BasePipelineComponent):
     """Class for merging data from different processors."""
 
-    def __init__(self, config: MergerSettings):
+    def __init__(self, config: DataMergerSettings):
         self.config = config
 
     def merge_data(self, data_collection=List[Data]) -> Data:

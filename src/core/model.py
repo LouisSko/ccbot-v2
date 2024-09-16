@@ -1,14 +1,16 @@
-from abc import abstractmethod
-from importlib import import_module
-from typing import List, Optional, Type
+"""Core module to define model logic."""
 
-import numpy as np
+import os
+from abc import abstractmethod
+from typing import List, Optional
+
 import pandas as pd
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
 
+from src.common_packages import create_logger
 from src.core.base import BaseConfiguration, BasePipelineComponent, ObjectId
-from src.core.datasource import Data, TrainingData
+from src.core.datasource import Data
 
 
 class TrainingInformation(BaseModel):
@@ -34,7 +36,7 @@ class ModelSettings(BaseModel):
 class ModelConfiguration(BaseConfiguration):
     """Configuration specific to a model."""
 
-    config_type: str = Field(
+    component_type: str = Field(
         default="model",
         Literal=True,
         description="Type of the configuration (e.g., model, processor). Do not change this value",
@@ -44,14 +46,23 @@ class ModelConfiguration(BaseConfiguration):
 
 
 class Prediction(BaseModel):
-    """Result of the model prediction"""
+    """Result of the model predictions.
 
-    # TODO: maybe add a date here
+    For each symbol and timestamp only a single prediction can be made
+    """
+
     symbol: str
-    predictions: np.array
+    time: List[pd.Timestamp]
+    prediction: List[int]
     object_ref: ObjectId  # object id of the model on which the prediction is based
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+logger = create_logger(
+    log_level=os.getenv("LOGGING_LEVEL", "INFO"),
+    logger_name=__name__,
+)
 
 
 # TODO: maybe also add settings here in the same way as for the datasource
@@ -62,6 +73,8 @@ class Model(BasePipelineComponent):
         """Initialize the BaseModel with configuration settings."""
 
         self.config = config
+        if os.path.exists(os.path.join(self.config.data_directory, self.config.file_name_model)):
+            self.load()
 
     @abstractmethod
     def load(self) -> None:
@@ -89,13 +102,15 @@ class Model(BasePipelineComponent):
     def predict(self, prediction_data: Data) -> List[Prediction]:
         """Function to make predictions."""
 
-        if prediction_data.object_ref != self.config.depends_on:
-            raise ValueError("Object reference is not correct. Set 'depends_on' in the 'ModelSettings' accordingly.")
+        # if prediction_data.object_ref != self.config.depends_on:
+        #    raise ValueError("Object reference is not correct. Set 'depends_on' in the 'ModelSettings' accordingly.")
 
         return self._predict(prediction_data)
 
     def train(self, training_data: Data) -> None:
         """Train and save the model"""
+
+        logger.info("Start training process...")
 
         if training_data.object_ref != self.config.depends_on:
             raise ValueError(
@@ -103,6 +118,8 @@ class Model(BasePipelineComponent):
             )
 
         self.config.training_information = self._train(training_data)
+
+        logger.info("Training process completed.")
 
     def create_configuration(self) -> ModelConfiguration:
         """Returns the configuration of the class."""

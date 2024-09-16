@@ -2,15 +2,17 @@
 
 import json
 import os
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from importlib import import_module
-from typing import List, Optional, Type, Union
+from typing import Dict, List, Type, Union
 
-import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from src.common_packages import CustomJSONEncoder, create_logger, timestamp_decoder
 from src.core.base import BaseConfiguration, BasePipelineComponent
+from src.core.datasource import Data, Datasource
+from src.core.engine import TradeSignal
+from src.core.model import Prediction
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),
@@ -26,53 +28,223 @@ class PipelineConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
-class Trade(BaseModel):
-    """Represents a single trade."""
-
-    time: pd.Timestamp = Field(..., description="Timestamp of the trade")
-    symbol: str = Field(..., description="Trading symbol, e.g., 'BTC/USDT'")
-    position_side: str = Field(..., description="Type of position: either 'buy' or 'sell'")
-    order_type: str = Field(..., description="Type of order: either 'limit' or 'market'")
-    limit_price: Optional[float] = Field(None, description="Limit price for the trade (optional for market orders)")
-    stop_loss_price: Optional[float] = Field(None, description="Stop loss price (optional)")
-    take_profit_price: Optional[float] = Field(None, description="Take profit price (optional)")
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-
-class Trades(BaseModel):
-    """Create Trades"""
-
-    data: List[Trade]
-
-
-class Pipeline:
+class Pipeline(ABC):
     """Pipeline class"""
 
     def __init__(self, config: PipelineConfig):
 
         self.config = config
         self.components = self._initialize_components(self.config)
+        self.execution_order, self.dependency_structure = self._determine_execution_order()
 
-    @abstractmethod
-    def train(self):
-        """Train all models in the pipeline."""
+    # @abstractmethod
+    # def _generate_trade_signals(self, result: Dict[str, List[Prediction]]) -> TradeSignal:
+    #     """generate trade signals based on predictions."""
 
-        pass
+    #     pass
 
-    @abstractmethod
-    def trigger(self) -> Trades:
+    def trigger(self) -> List[TradeSignal]:
         """Triggers the pipeline."""
 
-        pass
+        logger.info("Trigger Pipeline End-to-End...")
+        result = {component_id: None for component_id in self.execution_order}
 
-    # TODO: needs to get implemented
+        # go through the data pipeline step by step.
+        for component_id in self.execution_order:
+
+            component = self.components.get(component_id).get("instance")
+            component_dependencies = self.dependency_structure[component_id]
+            component_type = self.components[component_id]["config"].component_type
+
+            if component_type == "datasource":
+                result[component_id] = component.scrape_data_current()
+            elif component_type == "processor":
+                result[component_id] = component.process(result[component_dependencies])
+            elif component_type == "merger":
+                result[component_id] = component.merge_data([result[dep] for dep in component_dependencies])
+            elif component_type == "model":
+                result[component_id] = component.predict(result[component_dependencies])  # train the model
+
+        # trade_signals = self._generate_trade_signals(result)
+
+        final_predictions: List[Prediction] = result[self.execution_order[-1]]
+
+        trade_signals = []
+
+        for prediction in final_predictions:
+
+            for time, pred in zip(prediction.time, prediction.prediction):
+                pred = 1
+                if pred == 1:
+                    position_side = "buy"
+                    # limit_price = last_price * (1 + reduction)
+                elif pred == -1:
+                    position_side = "sell"
+                else:
+                    continue
+
+                # TODO: add limit order and stop loss / take profit functionality.
+                # -> for that I need the current close price
+                # Create a TradeSignal for this prediction
+                trade_signal = TradeSignal(
+                    time=time,
+                    symbol=prediction.symbol,
+                    order_type="market",  # or limit
+                    position_side=position_side,
+                    # limit_price=10000 if position_side == "buy" else 11000,  # Example logic for setting limit price
+                    # stop_loss_price=9500 if position_side == "buy" else 11500,  # Stop loss for risk management
+                    # take_profit_price=12000 if position_side == "buy" else 9000,  # Take profit target
+                )
+
+                trade_signals.append(trade_signal)
+
+        logger.info("Pipeline execution completed.")
+
+        # return the final result of the pipeline
+        return trade_signals
+
+    def train(self) -> None:
+        """Train all models in the pipeline."""
+
+        logger.info("Start Training Pipeline End-to-End...")
+        result = {component_id: None for component_id in self.execution_order}
+
+        # go through the data pipeline step by step.
+        for component_id in self.execution_order:
+
+            component: BasePipelineComponent = self.components.get(component_id).get("instance")
+            component_dependencies: List[str] = self.dependency_structure[component_id]
+            component_type: str = self.components[component_id]["config"].component_type
+
+            if component_type == "datasource":
+                result[component_id] = component.scrape_data_historic()
+            elif component_type == "processor":
+                result[component_id] = component.process(result[component_dependencies])
+            elif component_type == "merger":
+                result[component_id] = component.merge_data([result[dep] for dep in component_dependencies])
+            elif component_type == "model":
+                result[component_id] = component.train(result[component_dependencies])  # train the model
+                component.save()  # save model to disk
+
+        logger.info("Pipeline Training completed.")
+
     def create_and_save_mock_data(self):
         """Function to create mock data and to store it in the config directory based on datasources."""
 
-        # logger.info("create mock data for all datasources.")
+        logger.info("Create mock data for all datasources.")
 
-        pass
+        for component_id in self.execution_order:
+
+            component_type: str = self.components[component_id]["config"].component_type
+
+            if component_type == "datasource":
+
+                component: Datasource = self.components.get(component_id).get("instance")
+                mock_data: Data = component.create_mock_data()
+                component.save_mock_data(mock_data)
+
+        logger.info("Mock data got created successufully for all datasources.")
+
+    def activate_simulation_mode(self):
+        """Activate simulation mode
+
+        for each datasource it sets it to simulation mode
+        """
+
+        # go through the data pipeline step by step.
+        for component_id in self.execution_order:
+
+            component_type: str = self.components[component_id]["config"].component_type
+
+            if component_type == "datasource":
+                component: Datasource = self.components.get(component_id).get("instance")
+                component.use_mock_data = True
+                component.set_simulation_mode()
+
+    def deactivate_simulation_mode(self):
+        """Deactivate simulation mode
+
+        for each datasource it deactivates simulation mode
+        """
+
+        # go through the data pipeline step by step.
+        for component_id in self.execution_order:
+
+            component_type: str = self.components[component_id]["config"].component_type
+
+            if component_type == "datasource":
+                component: Datasource = self.components.get(component_id).get("instance")
+                component.use_mock_data = False
+
+                logger.info("Simulation mode deactivated for component: %s", component_id)
+
+    def _determine_execution_order(self) -> List[str]:
+        """Determine the topological order of the components based on dependencies.
+
+        A topological sort is a graph traversal in which each node v is visited only after all its dependencies are visited.
+        Here Kahn's algorithm is used to determine the correct order.
+        Node: represent pipeline component
+        Edge: represent dependency
+
+        Returns:
+            (List(str)): list of ordered pipeline components.
+                e.g. ['exchange', 'target_processor', 'feature_processor', 'merger', 'LGBM_Model']
+        """
+
+        # Build the dependency graph
+        dependency_graph: Dict[str, List[str]] = {}
+        dependency_structure: Dict[str, List[str]] = {}
+        indegree: Dict[str, int] = {}
+
+        # initialize graph nodes
+        for component_id in self.components:
+            dependency_graph[component_id] = []
+            dependency_structure[component_id] = None
+            indegree[component_id] = 0
+
+        for component_id, component_data in self.components.items():
+
+            component_config = component_data["config"]
+            depends_on = getattr(component_config.settings, "depends_on", None)
+
+            # Add edges based on dependencies
+            if isinstance(depends_on, list):
+
+                dependency_structure[component_id] = []
+
+                for dep in depends_on:
+                    dep_id = dep.value
+                    dependency_graph[dep_id].append(component_id)
+                    dependency_structure[component_id].append(dep_id)
+                    indegree[component_id] = indegree.get(component_id, 0) + 1
+            elif depends_on:
+                dep_id = depends_on.value
+                dependency_graph[dep_id].append(component_id)
+                dependency_structure[component_id] = dep_id
+                indegree[component_id] = indegree.get(component_id, 0) + 1
+
+        # Perform topological sort (Kahn's algorithm)
+        execution_order = []
+        zero_indegree = [node for node in indegree if indegree[node] == 0]
+
+        while zero_indegree:
+            current = zero_indegree.pop(0)
+            execution_order.append(current)
+
+            for neighbor in dependency_graph[current]:
+                indegree[neighbor] -= 1
+                if indegree[neighbor] == 0:
+                    zero_indegree.append(neighbor)
+
+        if len(execution_order) != len(self.components):
+            raise ValueError("The pipeline has circular dependencies!")
+
+        # sort the dependency structure according to the execution order just for nicer visualization
+        dependency_structure = {k: dependency_structure[k] for k in execution_order}
+
+        logger.info("Topological Search found dependency graph %s", dependency_graph)
+        logger.info("Execution order determined: %s", execution_order)
+        return execution_order, dependency_structure
 
     def export_pipeline(self, save_directory: str, json_file_name: str) -> None:
         """Export Pipeline component configurations to a json file.
@@ -82,6 +254,7 @@ class Pipeline:
             json_file_name (str): The path of the json file.
         """
 
+        logger.info("Saving Pipeline configuration to files...")
         file_path = os.path.join(save_directory, json_file_name)
 
         # Create the directory if it doesn't exist
@@ -104,6 +277,8 @@ class Pipeline:
 
         with open(file_path, "w", encoding="utf8") as file:
             json.dump(data, file, indent=4, cls=CustomJSONEncoder)
+
+        logger.info("Pipeline configuration saved to %s. It can be reloaded using 'load_pipeline()'", file_path)
 
     def _initialize_components(self, config: PipelineConfig):
         """Initialize all pipeline components."""

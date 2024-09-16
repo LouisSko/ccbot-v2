@@ -44,12 +44,11 @@ class DatasourceSettings(BaseModel):
     object_id: ObjectId
     symbols: Optional[List[str]] = None
     data_directory: Optional[str] = None  # path to the directory where the mock data is stored
-    use_mock_data: bool = False
     mock_data_file_name: Optional[str] = None
     scrape_start_date: Optional[pd.Timestamp] = None
     scrape_end_date: Optional[pd.Timestamp] = None
-    mock_data_start_date: Optional[pd.Timestamp] = None
-    mock_data_end_date: Optional[pd.Timestamp] = None
+    mock_data_start_date: Optional[pd.Timestamp] = None  # just for information purpose
+    mock_data_end_date: Optional[pd.Timestamp] = None  # just for information purpose
     simulation_start_date: Optional[pd.Timestamp] = None
     simulation_end_date: Optional[pd.Timestamp] = None
 
@@ -59,7 +58,7 @@ class DatasourceSettings(BaseModel):
 class DatasourceConfiguration(BaseConfiguration):
     """Configuration specific to a datasource."""
 
-    config_type: str = Field(
+    component_type: str = Field(
         default="datasource",
         Literal=True,
         description="Type of the configuration (e.g., model, processor). Do not change this value",
@@ -76,6 +75,7 @@ class Datasource(BasePipelineComponent):
 
         self.config = config
         self.mock_data = None
+        self.use_mock_data = False
         self.simulation_current_date = None
         self.simululation_end = False
 
@@ -108,7 +108,7 @@ class Datasource(BasePipelineComponent):
 
         symbols = symbols or self.config.symbols
 
-        if self.config.use_mock_data:
+        if self.use_mock_data:
             if self.mock_data:
                 return self._scrape_mock_data_historic(symbols)
             raise ValueError("Mock data needs to be loaded. Call set_simulation_mode() first")
@@ -120,7 +120,7 @@ class Datasource(BasePipelineComponent):
 
         symbols = symbols or self.config.symbols
 
-        if self.config.use_mock_data:
+        if self.use_mock_data:
             if self.mock_data:
                 return self._scrape_mock_data_current(symbols)
             raise ValueError("Mock data needs to be loaded. Call set_simulation_mode() first")
@@ -131,22 +131,21 @@ class Datasource(BasePipelineComponent):
         """Activate simulation mode by loading or creating mock data."""
 
         # Check if use_mock_data is set to True
-        if not self.config.use_mock_data:
+        if not self.use_mock_data:
             raise ValueError("Simulation mode requires `use_mock_data` to be set to True.")
 
         # Load or create mock data if not already loaded
-        if hasattr(self, "mock_data") and self.mock_data:
-            logger.info("Mock data already loaded.")
-        else:
+        if self.mock_data:
+            logger.info("Mock data already loaded. Trying to reload...")
 
-            mock_data_path = os.path.join(self.config.data_directory, self.config.mock_data_file_name)
-            # check if the mock data file exists
-            if os.path.exists(mock_data_path):
-                logger.info("Found existing mock data.")
-                self.mock_data = self.load_mock_data()
-            else:
-                logger.info("Create new mock data.")
-                self.mock_data = self.create_mock_data()
+        mock_data_path = os.path.join(self.config.data_directory, self.config.mock_data_file_name)
+        # check if the mock data file exists
+        if os.path.exists(mock_data_path):
+            logger.info("Found existing mock data.")
+            self.mock_data = self.load_mock_data()
+        else:
+            logger.info("Create new mock data.")
+            self.mock_data = self.create_mock_data()
 
         # Process symbol-specific data dates
         symbol_dates = [data.index for data in self.mock_data.data.values() if not data.empty]
@@ -166,7 +165,8 @@ class Datasource(BasePipelineComponent):
             self.config.simulation_end_date = last_mock_date
 
         # set first simulation date
-        self.simulation_current_date = first_mock_date
+        # TODO: make it more robust because if simulation date is same as mock date we might not be able to fetch data correctly
+        self.simulation_current_date = self.config.simulation_start_date
 
         logger.info(
             "Simulation mode activated. From %s to %s.",
@@ -186,14 +186,6 @@ class Datasource(BasePipelineComponent):
         logger.info("Evaluation is turned on. Load historic mock dataset from: %s", joblib_file_path)
 
         data: Data = joblib.load(joblib_file_path)
-
-        # Ensure that each entry is a DataFrame and set the index correctly
-        for symbol, df in data.data.items():
-            if not isinstance(df, pd.DataFrame):
-                raise ValueError(f"The data for {symbol} is not a pandas DataFrame.")
-            df["time"] = pd.to_datetime(df["time"], utc=True)
-            df.set_index("time", inplace=True)
-            data.data[symbol] = df
 
         logger.info("Mock data loaded successfully.")
 
@@ -236,7 +228,11 @@ class Datasource(BasePipelineComponent):
         self.config.mock_data_start_date = min([min(data.index) for data in data.data.values()])
         self.config.mock_data_end_date = max([max(data.index) for data in data.data.values()])
 
-        logger.info("Scraping process finished. This data can now be used to test the pipeline.")
+        logger.info(
+            "Scraping process finished. Start date: %s, End date: %s. This data can now be used to test the pipeline.",
+            self.config.mock_data_start_date,
+            self.config.mock_data_end_date,
+        )
 
         return data
 
