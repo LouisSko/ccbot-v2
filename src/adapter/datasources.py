@@ -38,9 +38,6 @@ class ExchangeDatasource(Datasource):
         self.config = config
         self.exchange = self._load_exchange()
 
-        if self.config.use_mock_data:
-            self.set_simulation_mode()
-
         if self.config.symbols is None:
             self._determine_symbols(number=50, threshold=2_000_000)
 
@@ -117,7 +114,7 @@ class ExchangeDatasource(Datasource):
             if symbols is None or symbol in symbols:
                 data[symbol] = df.loc[: self.simulation_current_date].iloc[:-1].copy()
 
-        return data
+        return Data(data=data, object_ref=self.config.object_id)
 
     def _scrape_real_data_historic(self, symbols: List[str]) -> Data:
         """Scrape historic data from the real exchange.
@@ -153,7 +150,7 @@ class ExchangeDatasource(Datasource):
         if self.simulation_current_date > self.config.simulation_end_date:
             self.simululation_end = True
 
-        return data
+        return Data(data=data, object_ref=self.config.object_id)
 
     def _scrape_real_data_current(self, symbols: List[str]) -> Data:
         """Scrape current data from the real exchange.

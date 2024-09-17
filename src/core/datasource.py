@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 import joblib
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.common_packages import create_logger
 from src.core.base import BaseConfiguration, BasePipelineComponent, ObjectId
@@ -40,11 +40,9 @@ class TrainingData(Data):
 class DatasourceSettings(BaseModel):
     """Settings used to configure the datasource."""
 
-    # TODO: maybe unify scrape start date and mock start date
     object_id: ObjectId
     symbols: Optional[List[str]] = None
     data_directory: Optional[str] = None  # path to the directory where the mock data is stored
-    mock_data_file_name: Optional[str] = None
     scrape_start_date: Optional[pd.Timestamp] = None
     scrape_end_date: Optional[pd.Timestamp] = None
     mock_data_start_date: Optional[pd.Timestamp] = None  # just for information purpose
@@ -53,6 +51,22 @@ class DatasourceSettings(BaseModel):
     simulation_end_date: Optional[pd.Timestamp] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator(
+        "simulation_start_date",
+        "simulation_end_date",
+        "scrape_start_date",
+        "scrape_end_date",
+        mode="before",
+    )
+    def check_timestamp(cls, value):  # pylint: disable=no-self-argument
+        """check if timestamps are set correctly."""
+
+        if isinstance(value, pd.Timestamp):
+            if value != value.round(pd.Timedelta("1d")):
+                raise ValueError(f"{value} must be defined as a full day: like '2023-08-08T00:00:00+00:00'")
+
+        return value
 
 
 class DatasourceConfiguration(BaseConfiguration):
@@ -138,7 +152,7 @@ class Datasource(BasePipelineComponent):
         if self.mock_data:
             logger.info("Mock data already loaded. Trying to reload...")
 
-        mock_data_path = os.path.join(self.config.data_directory, self.config.mock_data_file_name)
+        mock_data_path = os.path.join(self.config.data_directory, self.config.object_id.value + "_mock.joblib")
         # check if the mock data file exists
         if os.path.exists(mock_data_path):
             logger.info("Found existing mock data.")
@@ -181,7 +195,9 @@ class Datasource(BasePipelineComponent):
             file_path (Optional[str]): Path to the joblib file containing mock data. If not provided, the path specified in the config will be used.
         """
 
-        joblib_file_path = file_path or os.path.join(self.config.data_directory, self.config.mock_data_file_name)
+        joblib_file_path = file_path or os.path.join(
+            self.config.data_directory, self.config.object_id.value + "_mock.joblib"
+        )
 
         logger.info("Evaluation is turned on. Load historic mock dataset from: %s", joblib_file_path)
 
@@ -198,7 +214,9 @@ class Datasource(BasePipelineComponent):
             file_path (str): Path to the joblib file where the data will be saved.
         """
 
-        data_file_path = file_path or os.path.join(self.config.data_directory, self.config.mock_data_file_name)
+        data_file_path = file_path or os.path.join(
+            self.config.data_directory, self.config.object_id.value + "_mock.joblib"
+        )
 
         # Get the directory from the model path
         data_dir = os.path.dirname(data_file_path)

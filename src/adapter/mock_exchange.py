@@ -3,14 +3,13 @@
 import json
 import os
 import uuid
-from dataclasses import asdict
+from importlib import import_module
 from typing import Dict, List, Optional, Union
 
 import ccxt
 import joblib
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
-from pydantic.config import ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from src.adapter.datasources import ExchangeDatasource, ExchangeDatasourceSettings
 from src.common_packages import CustomJSONEncoder, create_logger, timestamp_decoder
@@ -23,7 +22,7 @@ logger = create_logger(
 )
 
 MOCK_DATA_FILE = "mock_exchange.joblib"
-CONFIG_FILE = "config.json"
+CONFIG_FILE = "mock_exchange_config.json"
 
 
 class MockExchangeSettings(BaseModel):
@@ -54,16 +53,32 @@ class MockExchangeSettings(BaseModel):
 
     object_id: ObjectId
     data_directory: str
-    simulation_start_date: pd.Timestamp
-    simulation_end_date: pd.Timestamp  # TODO: Simulation End date is not used anywhere
     scrape_start_date: pd.Timestamp
     scrape_end_date: Optional[pd.Timestamp] = None
+    simulation_start_date: pd.Timestamp
+    simulation_end_date: pd.Timestamp  # TODO: Simulation End date is not used anywhere
     timeframe: pd.Timedelta = pd.Timedelta("4h")
     symbols: Optional[List[str]] = None
 
     exchange_config: Dict  # those are the actual values used for initialising a real ccxt exchangee
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator(
+        "simulation_start_date",
+        "simulation_end_date",
+        "scrape_start_date",
+        "scrape_end_date",
+        mode="before",
+    )
+    def check_timestamp(cls, value):  # pylint: disable=no-self-argument
+        """check if timestamps are set correctly."""
+
+        if isinstance(value, pd.Timestamp):
+            if value != value.round(pd.Timedelta("1d")):
+                raise ValueError(f"{value} must be defined as a full day: like '2023-08-08T00:00:00+00:00'")
+
+        return value
 
 
 class MockExchangeConfiguration(BaseConfiguration):
@@ -122,7 +137,9 @@ class MockExchange(ccxt.bitget):
         return order_fees
 
     def create_and_save_mock_data(self):
-        """Function that creates and stores the mock data."""
+        """Function that creates and stores the mock data.
+
+        Next time the mock exchange gets initialized, the data is automatically loaded."""
 
         # create an exchange datasource and fetch the data and store it.
         ex_ds_config = ExchangeDatasourceSettings(
@@ -136,10 +153,11 @@ class MockExchange(ccxt.bitget):
 
         exchange_datasource = ExchangeDatasource(ex_ds_config)
 
-        mock_data = exchange_datasource.scrape_data_historic()
+        self.data: Data = exchange_datasource.scrape_data_historic()
 
         mock_data_path = os.path.join(self.config.data_directory, MOCK_DATA_FILE)
-        exchange_datasource.save_mock_data(mock_data, mock_data_path)
+        exchange_datasource.save_mock_data(self.data, mock_data_path)
+        self.export_config()
 
     def load_mock_data(self) -> None:
         """Load mock data from a joblib file."""
@@ -165,29 +183,32 @@ class MockExchange(ccxt.bitget):
 
         logger.info("Exchange mock data loaded successfully.")
 
-        self._next_step()
+        self.next_step()
 
     def _create_configuration(self) -> MockExchangeConfiguration:
         """Returns the configuration of the class."""
 
         resource_path = f"{self.__module__}.{self.__class__.__name__}"
+        config_path = f"{MockExchangeConfiguration.__module__}.{MockExchangeConfiguration.__name__}"
+        settings_path = f"{self.config.__module__}.{self.config.__class__.__name__}"
 
         return MockExchangeConfiguration(
             object_id=self.config.object_id,
             resource_path=resource_path,
+            settings_path=settings_path,
+            config_path=config_path,
             settings=self.config,
         )
 
     def export_config(self) -> None:
         """Export configuration as a json file."""
 
-        # TODO: think about whether this is necessary
-        # config = self._create_configuration()
+        config = self._create_configuration()
 
         file_path = os.path.join(self.config.data_directory, CONFIG_FILE)
 
         with open(file_path, "w", encoding="utf8") as file:
-            json.dump(self.config.model_dump(), file, indent=4, cls=CustomJSONEncoder)
+            json.dump(config.model_dump(), file, indent=4, cls=CustomJSONEncoder)
 
         logger.info("Configuration stored at %s", file_path)
 
@@ -202,7 +223,7 @@ class MockExchange(ccxt.bitget):
             json.dump(self.trade_history, file, indent=4, default=str)
         logger.info("Trade history saved to: %s", path)
 
-    def _next_step(self):
+    def next_step(self):
         """set the next date and data"""
 
         if self.current_date is None:
@@ -216,7 +237,7 @@ class MockExchange(ccxt.bitget):
 
         logger.info("Simulation current date %s", self.current_date)
 
-    def _check_limit_orders(self) -> None:
+    def check_limit_orders(self) -> None:
         """Check all pending limit orders to see if they should be executed."""
 
         executed_orders = []
@@ -255,7 +276,7 @@ class MockExchange(ccxt.bitget):
         for order in executed_orders:
             self.pending_orders.remove(order)
 
-    def _check_stop_losses(self) -> None:
+    def check_stop_losses(self) -> None:
         """Check all open positions to see if the stop loss condition is met.
 
         Returns:
@@ -283,7 +304,7 @@ class MockExchange(ccxt.bitget):
                 logger.info("Stop loss triggered for short position: %s", symbol)
                 self.close_position(symbol, side="short", stop_loss_triggered=True)
 
-    def _check_take_profit(self) -> None:
+    def check_take_profit(self) -> None:
         """Check all open positions to see if the stop loss condition is met.
 
         Returns:
@@ -673,15 +694,28 @@ class MockExchange(ccxt.bitget):
         self.cancel_orders(ids_to_delete, symbol=symbol)
 
 
-def load_mock_exchange(file_path: str) -> MockExchange:
+def load_mock_exchange(save_directory: str) -> MockExchange:
     """Create a mock exchange object based on a stored configuration json
     Args:
         file_path (str): File directory of the configuration.
     """
 
+    file_path = os.path.join(save_directory, CONFIG_FILE)
+
+    if not os.path.exists(file_path):
+        raise ValueError(f"Specified path does not exist: {file_path}")
+
     with open(file_path, "r", encoding="utf8") as f:
-        config = json.load(f, object_hook=timestamp_decoder)
+        config_dict = json.load(f, object_hook=timestamp_decoder)
 
-    config = TypeAdapter(MockExchangeSettings).validate_python(config)
+    module_path_res, cls_name_res = config_dict["resource_path"].rsplit(".", 1)
+    module_res = import_module(module_path_res)
+    exchange_cls: MockExchange = getattr(module_res, cls_name_res)
 
-    return MockExchange(config=config)
+    module_path_settings, cls_name_settings = config_dict.get("settings_path").rsplit(".", 1)
+    module_settings = import_module(module_path_settings)
+    settings_cls = getattr(module_settings, cls_name_settings)
+
+    settings: MockExchangeSettings = TypeAdapter(settings_cls).validate_python(config_dict["settings"])
+
+    return exchange_cls(config=settings)

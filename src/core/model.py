@@ -17,6 +17,7 @@ class TrainingInformation(BaseModel):
     """Symbols on which the model got trained."""
 
     symbols: List[str]
+    file_path_model: str  # file name of the model
     train_start_date: pd.Timestamp
     train_end_date: pd.Timestamp
 
@@ -29,7 +30,6 @@ class ModelSettings(BaseModel):
     object_id: ObjectId
     depends_on: ObjectId  # ID of the processor this model depends on.
     data_directory: str  # directory where the data is getting saved
-    file_name_model: str  # file name of the model
     training_information: Optional[TrainingInformation] = None
 
 
@@ -73,8 +73,10 @@ class Model(BasePipelineComponent):
         """Initialize the BaseModel with configuration settings."""
 
         self.config = config
-        if os.path.exists(os.path.join(self.config.data_directory, self.config.file_name_model)):
-            self.load()
+        if self.config.training_information is not None:
+            logger.info("Found training information. Attempt to load model.")
+            if os.path.exists(self.config.training_information.file_path_model):
+                self.load()
 
     @abstractmethod
     def load(self) -> None:

@@ -3,7 +3,7 @@ import os
 from typing import List, Literal, Optional
 
 from src.common_packages import create_logger
-from src.core.engine import EngineSettings, TradeSignal, TradingEngine
+from src.core.engine import TradeSignal, TradingEngine
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),
@@ -13,12 +13,6 @@ logger = create_logger(
 
 class CCXTFuturesTradingEngine(TradingEngine):
     """Class to interact with the exchange API."""
-
-    def __init__(self, config: EngineSettings):
-
-        self.config = config
-        self.order_details = {}
-        self.set_trading_settings()
 
     def set_trading_settings(self) -> None:
         """Set the settings for the trading.
@@ -72,13 +66,15 @@ class CCXTFuturesTradingEngine(TradingEngine):
 
         positions = self.config.exchange.fetch_positions()
         log_messages = []
-
+        self.symbols_with_open_positions = []
         if not positions:
             log_messages.append("No open position")
         else:
             log_messages.append("Log open positions:")
             for position in positions:
                 symbol = position["info"].get("symbol", "N/A")
+                self.symbols_with_open_positions.append(symbol)
+
                 hold_side = position["info"].get("holdSide", "N/A")
                 position = position["info"].get("total", "N/A")
                 message = f"Symbol: {symbol}, holdSide: {hold_side}, PositionSize: {position}"
@@ -209,20 +205,29 @@ class CCXTFuturesTradingEngine(TradingEngine):
         """
 
         # first lets close all old open orders.
+        # this might overwrite things if we have more then one tradesignal for a single symbol
+        # TODO: only if they are from the timeframe before
         for trade_signal in trade_signals:
             if self.config.exchange.fetch_open_orders(symbol=trade_signal.symbol) != []:
                 self.config.exchange.cancel_all_orders(symbol=trade_signal.symbol)
                 logger.info("Canceled all open orders for symbol: %s", trade_signal.symbol)
 
-        # now create orders/close trades
+                # track if there are any symbols for whom an open position exists but no prediction
+                self.symbols_with_open_positions.remove(trade_signal.symbol)
+
+        # close open positions of all symbols, where no prediction information exists
+        # This can be because "no_trade" gets predicted or because no data is available
+        for symbol in self.symbols_with_open_positions:
+            hold_side = self._determine_position(symbol=symbol)
+            self._close_trade(symbol=symbol, side=hold_side)
+
+        # now open trades (potentially reverse trades)
         for trade_signal in trade_signals:
 
             hold_side = self._determine_position(symbol=trade_signal.symbol)
 
             if trade_signal.position_side == hold_side:
                 logger.info("Keeping position for symbol: %s with side: %s", trade_signal.symbol, hold_side)
-            elif trade_signal.position_side == "no_trade" and hold_side != "no_trade":
-                self._close_trade(symbol=trade_signal.symbol, side=hold_side)
             else:
                 if hold_side != "no_trade":
                     logger.info("Open reverse trade.")
@@ -255,15 +260,14 @@ class CCXTFuturesTradingEngine(TradingEngine):
             trade_signal (TradeSignal): the trade signal
         """
 
-        # Fetch all open orders for the symbol and delete them # TODO: only if they are from the timeframe before
         logger.info(50 * "-")
         logger.info("create new order")
 
-        trade_signal = self.determine_order_size(trade_signal)
+        trade_signal = self.determine_order_size(trade_signal, method="free_balance", risk_pct=0.5)
 
         if trade_signal.order_amount is None:
             logger.info("Amount is None. No order gets placed.")
-            return None
+            return
 
         params = {"hedged": True, "marginMode": "isolated"}
 
