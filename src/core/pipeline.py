@@ -4,26 +4,32 @@ import json
 import os
 from abc import ABC, abstractmethod
 from importlib import import_module
-from typing import Dict, List, Type, Union
+from typing import Dict, List, Optional, Type, Union
 
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from src.common_packages import CustomJSONEncoder, create_logger, timestamp_decoder
 from src.core.base import BaseConfiguration, BasePipelineComponent
 from src.core.datasource import Data, Datasource
 from src.core.engine import TradeSignal
-from src.core.model import Prediction
+from src.core.model import Model, Prediction, TrainingInformation
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),
     logger_name=__name__,
 )
 
+PIPELINE_JSON_FILE_NAME = "pipeline_config.json"
 
-class PipelineConfig(BaseModel):
+
+class PipelineSettings(BaseModel):
     """Create a Pipeline based on a list of BaseConfiguration"""
 
-    pipeline: Union[List[BaseConfiguration], List[BasePipelineComponent]]
+    components: Union[List[BaseConfiguration], List[BasePipelineComponent]]
+    save_dir: str  # directory where the pipeline is getting saved
+    timeframe: pd.Timedelta  # execution timeframe of the pipeline
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -31,11 +37,13 @@ class PipelineConfig(BaseModel):
 class Pipeline(ABC):
     """Pipeline class"""
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(self, config: PipelineSettings):
 
         self.config = config
+        self.last_training_date = None
+
         self.components = self._initialize_components(self.config)
-        self.execution_order, self.dependency_structure = self._determine_execution_order()
+        self.execution_order, self.dependency_structure = self._get_execution_order()
 
     # @abstractmethod
     # def _generate_trade_signals(self, result: Dict[str, List[Prediction]]) -> TradeSignal:
@@ -74,7 +82,7 @@ class Pipeline(ABC):
         for prediction in final_predictions:
 
             for time, pred in zip(prediction.time, prediction.prediction):
-                pred = 1
+
                 if pred == 1:
                     position_side = "buy"
                     # limit_price = last_price * (1 + reduction)
@@ -106,6 +114,8 @@ class Pipeline(ABC):
     def train(self) -> None:
         """Train all models in the pipeline."""
 
+        # TODO: log some information on what data the training is performed.
+
         logger.info("Start Training Pipeline End-to-End...")
         result = {component_id: None for component_id in self.execution_order}
 
@@ -126,10 +136,80 @@ class Pipeline(ABC):
                 result[component_id] = component.train(result[component_dependencies])  # train the model
                 component.save()  # save model to disk
 
+        self.last_training_date = self.get_last_training_date()
+
         logger.info("Pipeline Training completed.")
 
+        self.export_pipeline()  # save the new training information
+
+    def get_last_training_date(self):
+        """Function to determine the last date the pipeline got trained.
+
+        This is done based on the information of the different models.
+        Alternatively the current time at which the pipeline got trained could be used,
+        but this results in problems when backtesting.
+        """
+
+        logger.info("Determine last training date for all models.")
+
+        train_end_dates = []
+
+        for component_id in self.execution_order:
+
+            component_type: str = self.components[component_id]["config"].component_type
+
+            if component_type == "model":
+
+                component: Model = self.components.get(component_id).get("instance")
+                training_information: TrainingInformation = component.config.training_information
+
+                if training_information is None:
+                    raise ValueError(
+                        "None of the models have an associated training_information. Most likely the models have not been trained yet. Check pipeline training."
+                    )
+
+                train_end_dates.append(training_information.train_end_date)
+
+        # Ensure all models have the same training date
+        if not train_end_dates:
+            raise ValueError("No models found in the pipeline to determine the last training date.")
+
+        unique_dates = set(train_end_dates)
+
+        if len(unique_dates) != 1:
+            raise ValueError(f"Multiple different last training dates found: {unique_dates}. Please check.")
+
+        last_train_date = unique_dates.pop()
+
+        logger.info("Last training date was: %s", last_train_date)
+
+        return last_train_date
+
+    def get_symbols(self) -> List[str]:
+        """Function to get all the symbols which were used during training."""
+
+        list_symbols = []
+
+        # extract all symbols which were used for training
+        for component_id in self.execution_order:
+
+            component_type: str = self.components[component_id]["config"].component_type
+
+            if component_type == "datasource":
+                component: Datasource = self.components.get(component_id).get("instance")
+
+                if component.config.symbols is not None:
+                    list_symbols.extend(component.config.symbols)
+
+        logger.info("Determined the symbols which were used for training: %s", list_symbols)
+
+        return list_symbols
+
     def create_and_save_mock_data(self):
-        """Function to create mock data and to store it in the config directory based on datasources."""
+        """Function to create mock data and to store it in the config directory based on datasources.
+
+        The scrape_start_date and scrape_end_date is used to fetch the mock data.
+        """
 
         logger.info("Create mock data for all datasources.")
 
@@ -143,7 +223,8 @@ class Pipeline(ABC):
                 mock_data: Data = component.create_mock_data()
                 component.save_mock_data(mock_data)
 
-        logger.info("Mock data got created successufully for all datasources.")
+        logger.info("Mock data got created successfully for all datasources.")
+        self.export_pipeline()  # update pipeline
 
     def activate_simulation_mode(self):
         """Activate simulation mode
@@ -160,6 +241,47 @@ class Pipeline(ABC):
                 component: Datasource = self.components.get(component_id).get("instance")
                 component.use_mock_data = True
                 component.set_simulation_mode()
+
+    # def get_current_simulation_date(self):
+    #     """get current simulation date based on the exchange data.
+
+    #     This might be prone to errors in case we have multiple datasources.
+    #     """
+
+    #     # Collect current dates for the data of all datasources in the pipeline
+    #     current_dates = [
+    #         self.components[component_id]["instance"].config.simulation_current_date
+    #         for component_id in self.execution_order
+    #         if self.components[component_id]["config"].component_type == "datasource"
+    #     ]
+
+    #     # get the most recent date as current date avoid data leakage
+    #     return max(current_dates)
+
+    def get_current_simulation_date(self) -> Optional[pd.Timestamp]:
+        """get current simulation date based on the exchange data.
+
+        This might be prone to errors in case we have multiple datasources.
+
+        Return:
+            Optional[pd.Timestamp]: Eiter the timestamp of the current simulation step or None in case no more simulation data is available
+        """
+
+        current_date = []
+        end_date = []
+
+        for component_id in self.execution_order:
+
+            component_type: str = self.components[component_id]["config"].component_type
+
+            if component_type == "datasource":
+                current_date.append(self.components[component_id]["instance"].simulation_current_date)
+                end_date.append(self.components[component_id]["instance"].config.simulation_end_date)
+
+        if max(current_date) > min(end_date):
+            return None
+
+        return max(current_date)
 
     def deactivate_simulation_mode(self):
         """Deactivate simulation mode
@@ -178,7 +300,7 @@ class Pipeline(ABC):
 
                 logger.info("Simulation mode deactivated for component: %s", component_id)
 
-    def _determine_execution_order(self) -> List[str]:
+    def _get_execution_order(self) -> List[str]:
         """Determine the topological order of the components based on dependencies.
 
         A topological sort is a graph traversal in which each node v is visited only after all its dependencies are visited.
@@ -246,28 +368,30 @@ class Pipeline(ABC):
         logger.info("Execution order determined: %s", execution_order)
         return execution_order, dependency_structure
 
-    def export_pipeline(self, save_directory: str, json_file_name: str) -> None:
-        """Export Pipeline component configurations to a json file.
-
-        Args:
-            save_directory (str): The path of the directory.
-            json_file_name (str): The path of the json file.
-        """
+    def export_pipeline(self) -> None:
+        """Export Pipeline component configurations to a json file based on the specified save directory"""
 
         logger.info("Saving Pipeline configuration to files...")
-        file_path = os.path.join(save_directory, json_file_name)
+        file_path = os.path.join(self.config.save_dir, PIPELINE_JSON_FILE_NAME)
 
         # Create the directory if it doesn't exist
-        if not os.path.exists(save_directory):
-            os.makedirs(save_directory)
+        if not os.path.exists(self.config.save_dir):
+            logger.info("Specified directory does not exist. Create dir: %s", self.config.save_dir)
+            os.makedirs(self.config.save_dir)
 
         data = []
 
         # add pipeline information
         pipeline_cls = f"{self.__module__}.{self.__class__.__name__}"
-        data.append({"pipeline_path": pipeline_cls})
+        data.append(
+            {
+                "pipeline_path": pipeline_cls,
+                "timeframe": self.config.timeframe,
+                "last_training_date": self.last_training_date,
+            }
+        )  # TODO: might change the last_training_date in the future. Because now we depend on loading in the pipeline. Cannot do
 
-        for component in self.config.pipeline:
+        for component in self.config.components:
 
             if isinstance(component, BasePipelineComponent):
                 data.append(component.create_configuration().model_dump())
@@ -280,11 +404,11 @@ class Pipeline(ABC):
 
         logger.info("Pipeline configuration saved to %s. It can be reloaded using 'load_pipeline()'", file_path)
 
-    def _initialize_components(self, config: PipelineConfig):
+    def _initialize_components(self, config: PipelineSettings):
         """Initialize all pipeline components."""
 
         components = {}
-        for component in config.pipeline:
+        for component in config.components:
 
             if isinstance(component, BasePipelineComponent):
                 components[component.config.object_id.value] = {
@@ -306,26 +430,38 @@ class Pipeline(ABC):
         return components
 
 
-def load_pipeline(save_directory: str, json_file_name: str) -> Pipeline:
+def load_pipeline(save_directory: str) -> Pipeline:
     """Create a pipeline based on a stored pipeline component configuration json
     Args:
         save_directory (str): The path of the directory.
-        json_file_name (str): The path of the json file.
     """
 
-    file_path = os.path.join(save_directory, json_file_name)
+    file_path = os.path.join(save_directory, PIPELINE_JSON_FILE_NAME)
+
+    if not os.path.exists(file_path):
+        raise ValueError("File path does not exist")
 
     with open(file_path, "r", encoding="utf8") as f:
         config = json.load(f, object_hook=timestamp_decoder)
 
     # first entry of the config is general information regarding the pipeline
-    module_path, class_name = config.pop(0)["pipeline_path"].rsplit(".", 1)
+    pipeline_info = config.pop(0)
+    module_path, class_name = pipeline_info["pipeline_path"].rsplit(".", 1)
     module = import_module(module_path)
-    pipeline: Pipeline = getattr(module, class_name)
+    pipeline_class: Pipeline = getattr(module, class_name)
 
-    config = PipelineConfig(pipeline=[_configuration_factory(config_dict) for config_dict in config])
+    config = PipelineSettings(
+        components=[_configuration_factory(config_dict) for config_dict in config],
+        timeframe=pipeline_info["timeframe"],
+        save_dir=save_directory,
+    )
 
-    return pipeline(config=config)
+    loaded_pipeline: Pipeline = pipeline_class(config=config)
+
+    # set the information whether the pipeline is trained or not.
+    loaded_pipeline.last_training_date = pipeline_info["last_training_date"]
+
+    return loaded_pipeline
 
 
 def _configuration_factory(config_dict: dict) -> BaseConfiguration:
