@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from importlib import import_module
 from typing import Dict, List, Optional, Type, Union
 
-import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
@@ -30,6 +29,9 @@ class PipelineSettings(BaseModel):
     components: Union[List[BaseConfiguration], List[BasePipelineComponent]]
     save_dir: str  # directory where the pipeline is getting saved
     timeframe: pd.Timedelta  # execution timeframe of the pipeline
+    test_interval_length: Optional[pd.Timedelta] = (
+        None  # length of the test set for evaluating the pipeline. If none is specified, use all data for training
+    )
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -39,10 +41,10 @@ class Pipeline(ABC):
 
     def __init__(self, config: PipelineSettings):
 
-        self.config = config
-        self.last_training_date = None
-
-        self.components = self._initialize_components(self.config)
+        self.config: PipelineSettings = config
+        self.last_training_date: pd.Timestamp = None
+        self.simulation_mode: bool = None
+        self.components: dict = self._initialize_components(self.config)
         self.execution_order, self.dependency_structure = self._get_execution_order()
 
     # @abstractmethod
@@ -114,12 +116,19 @@ class Pipeline(ABC):
     def train(self) -> None:
         """Train all models in the pipeline."""
 
-        # TODO: log some information on what data the training is performed.
-
         logger.info("Start Training Pipeline End-to-End...")
+
+        # get current date, substract x days as starting point for testing
+        if self.config.test_interval_length:
+            train_test_split_date = self.get_current_date() - self.config.test_interval_length
+            logger.info("Train-test-split is at %s", train_test_split_date)
+        else:
+            train_test_split_date = None
+            logger.info("Use all data for training.")
+
         result = {component_id: None for component_id in self.execution_order}
 
-        # go through the data pipeline step by step.
+        # now go through the data pipeline step by step.
         for component_id in self.execution_order:
 
             component: BasePipelineComponent = self.components.get(component_id).get("instance")
@@ -133,8 +142,13 @@ class Pipeline(ABC):
             elif component_type == "merger":
                 result[component_id] = component.merge_data([result[dep] for dep in component_dependencies])
             elif component_type == "model":
-                result[component_id] = component.train(result[component_dependencies])  # train the model
-                component.save()  # save model to disk
+                if train_test_split_date:
+                    result[component_id] = component.train_and_evaluate(
+                        result[component_dependencies], train_test_split_date
+                    )
+                else:
+                    result[component_id] = component.train(result[component_dependencies])
+                component.save()
 
         self.last_training_date = self.get_last_training_date()
 
@@ -242,46 +256,38 @@ class Pipeline(ABC):
                 component.use_mock_data = True
                 component.set_simulation_mode()
 
-    # def get_current_simulation_date(self):
-    #     """get current simulation date based on the exchange data.
+        self.simulation_mode = True
 
-    #     This might be prone to errors in case we have multiple datasources.
-    #     """
+    def get_current_date(self) -> Optional[pd.Timestamp]:
+        """get current date based on the datasources.
 
-    #     # Collect current dates for the data of all datasources in the pipeline
-    #     current_dates = [
-    #         self.components[component_id]["instance"].config.simulation_current_date
-    #         for component_id in self.execution_order
-    #         if self.components[component_id]["config"].component_type == "datasource"
-    #     ]
+        This might be prone to errors in simulation mode when we have multiple datasources.
 
-    #     # get the most recent date as current date avoid data leakage
-    #     return max(current_dates)
-
-    def get_current_simulation_date(self) -> Optional[pd.Timestamp]:
-        """get current simulation date based on the exchange data.
-
-        This might be prone to errors in case we have multiple datasources.
 
         Return:
             Optional[pd.Timestamp]: Eiter the timestamp of the current simulation step or None in case no more simulation data is available
         """
 
-        current_date = []
-        end_date = []
+        if self.simulation_mode:
 
-        for component_id in self.execution_order:
+            current_date = []
+            end_date = []
 
-            component_type: str = self.components[component_id]["config"].component_type
+            for component_id in self.execution_order:
 
-            if component_type == "datasource":
-                current_date.append(self.components[component_id]["instance"].simulation_current_date)
-                end_date.append(self.components[component_id]["instance"].config.simulation_end_date)
+                component_type: str = self.components[component_id]["config"].component_type
 
-        if max(current_date) > min(end_date):
-            return None
+                if component_type == "datasource":
+                    current_date.append(self.components[component_id]["instance"].simulation_current_date)
+                    end_date.append(self.components[component_id]["instance"].config.simulation_end_date)
 
-        return max(current_date)
+            if max(current_date) > min(end_date):
+                return None
+
+            return max(current_date)
+
+        # otherwise return the current time
+        return pd.Timestamp.now(tz="utc")
 
     def deactivate_simulation_mode(self):
         """Deactivate simulation mode
@@ -300,8 +306,13 @@ class Pipeline(ABC):
 
                 logger.info("Simulation mode deactivated for component: %s", component_id)
 
+        self.simulation_mode = False
+
     def _get_execution_order(self) -> List[str]:
         """Determine the topological order of the components based on dependencies.
+
+        In this sorting, datsources are not necessarily placed at the start. In general this is not a problem,
+        but for calculating the the train test splits, all data needs to be fetched first.
 
         A topological sort is a graph traversal in which each node v is visited only after all its dependencies are visited.
         Here Kahn's algorithm is used to determine the correct order.
@@ -349,6 +360,7 @@ class Pipeline(ABC):
         execution_order = []
         zero_indegree = [node for node in indegree if indegree[node] == 0]
 
+        # does that approach even work when I have more than one datasource?
         while zero_indegree:
             current = zero_indegree.pop(0)
             execution_order.append(current)
@@ -388,6 +400,7 @@ class Pipeline(ABC):
                 "pipeline_path": pipeline_cls,
                 "timeframe": self.config.timeframe,
                 "last_training_date": self.last_training_date,
+                "test_interval_length": self.config.test_interval_length,
             }
         )  # TODO: might change the last_training_date in the future. Because now we depend on loading in the pipeline. Cannot do
 
@@ -454,6 +467,7 @@ def load_pipeline(save_directory: str) -> Pipeline:
         components=[_configuration_factory(config_dict) for config_dict in config],
         timeframe=pipeline_info["timeframe"],
         save_dir=save_directory,
+        test_interval_length=pipeline_info["test_interval_length"],
     )
 
     loaded_pipeline: Pipeline = pipeline_class(config=config)
