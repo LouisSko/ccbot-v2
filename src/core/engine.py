@@ -6,11 +6,9 @@ from typing import List, Optional
 
 import pandas as pd
 from ccxt import Exchange
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field  # , field_validator, model_validator
 
 from src.common_packages import create_logger
-from src.core.base import BasePipelineComponent
-from src.core.model import Prediction
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),

@@ -28,31 +28,34 @@ class LgbmModelClf(Model):
 
     def __init__(self, config: ModelSettings) -> None:
         super().__init__(config)
-        self.model = LGBMClassifier(boosting_type="gbdt", n_jobs=-1, verbose=-1)
+
+        # create model if it does not exist
+        if not hasattr(self, "model") or self.model is None:
+            self.model = LGBMClassifier(boosting_type="gbdt", n_jobs=-1, verbose=-1)
 
     def load(self) -> None:
         """Load the model from disk."""
 
-        path = os.path.join(self.config.data_directory, self.config.file_name_model)
+        path = self.config.training_information.file_path_model
 
-        if not os.path.exists(path):
+        if os.path.exists(path):
+            self.model = joblib.load(path)
+            logger.info("Model successfully loaded from %s", path)
+        else:
             logger.error("Model file does not exist at %s", path)
             raise ValueError("Model path does not exist.")
 
-        self.model = joblib.load(path)
-        logger.info("Model successfully loaded from %s", path)
-
     def save(self):
-        """Here the model gest loaded"""
+        """Save the trained model to disk."""
 
         # Create the directory if it doesn't exist
         if not os.path.exists(self.config.data_directory):
             os.makedirs(self.config.data_directory)
 
-        path = os.path.join(self.config.data_directory, self.config.file_name_model)
+        full_model_path = os.path.join(self.config.data_directory, self.config.object_id.value + ".joblib")
 
-        joblib.dump(self.model, path)
-        logger.info("Model saved to %s", path)
+        joblib.dump(self.model, full_model_path)
+        logger.info("Model saved to %s", full_model_path)
 
     def _train(self, training_data: Data) -> TrainingInformation:
         """Train the model with hyperparameter tuning."""
@@ -73,26 +76,39 @@ class LgbmModelClf(Model):
         train_start_date = min(x.index)
         train_end_date = max(x.index)
 
+        full_model_path = os.path.join(self.config.data_directory, self.config.object_id.value + ".joblib")
+
         return TrainingInformation(
             symbols=symbols,
             train_start_date=train_start_date,
             train_end_date=train_end_date,
+            file_path_model=full_model_path,
         )
 
     def _predict(self, prediction_data: Data) -> List[Prediction]:
         """Function to make predictions."""
 
-        result = []
+        predictions = []
+        ground_truth = None
 
         for symbol, df in prediction_data.data.items():
 
             if "target" in df.columns:
+                ground_truth = df["target"].to_list()
                 df = df.drop(columns="target")
 
             y_pred = self.model.predict(df)
-            # y_pred = y_pred.reshape(-1, 1)
 
-            # TODO: maybe add a date infromation
-            result.append(Prediction(symbol=symbol, predictions=y_pred))
+            time = list(df.index)
 
-        return List[Prediction](data=result)
+            predictions.append(
+                Prediction(
+                    object_ref=self.config.object_id,
+                    symbol=symbol,
+                    prediction=list(y_pred),
+                    ground_truth=ground_truth,
+                    time=time,
+                )
+            )
+
+        return predictions
