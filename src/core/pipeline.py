@@ -4,6 +4,7 @@ import json
 import os
 from abc import ABC, abstractmethod
 from importlib import import_module
+from itertools import chain
 from typing import Dict, List, Optional, Type, Union
 
 import pandas as pd
@@ -13,7 +14,9 @@ from src.common_packages import CustomJSONEncoder, create_logger, timestamp_deco
 from src.core.base import BaseConfiguration, BasePipelineComponent
 from src.core.datasource import Data, Datasource
 from src.core.engine import TradeSignal
+from src.core.evaluation import evaluate
 from src.core.model import Model, Prediction, TrainingInformation
+from src.core.splitter import data_splitter
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),
@@ -67,16 +70,20 @@ class Pipeline(ABC):
             component_type = self.components[component_id]["config"].component_type
 
             if component_type == "datasource":
-                result[component_id] = component.scrape_data_current()
+                result[component_id] = component.scrape_data_historic()
             elif component_type == "processor":
                 result[component_id] = component.process(result[component_dependencies])
             elif component_type == "merger":
                 result[component_id] = component.merge_data([result[dep] for dep in component_dependencies])
             elif component_type == "model":
-                result[component_id] = component.predict(result[component_dependencies])  # train the model
+                result[component_id] = component.predict(result[component_dependencies])
+            elif component_type == "ensemble":
+                # Flatten the list of lists into a single list of Predictions
+                result[component_id] = component.ensemble([result[dep] for dep in component_dependencies])
 
         # trade_signals = self._generate_trade_signals(result)
 
+        # get the final predictions
         final_predictions: List[Prediction] = result[self.execution_order[-1]]
 
         trade_signals = []
@@ -143,12 +150,20 @@ class Pipeline(ABC):
                 result[component_id] = component.merge_data([result[dep] for dep in component_dependencies])
             elif component_type == "model":
                 if train_test_split_date:
-                    result[component_id] = component.train_and_evaluate(
-                        result[component_dependencies], train_test_split_date
+                    data_train, data_test = data_splitter(
+                        data=result[component_dependencies], split_date=train_test_split_date
                     )
+                    component.train(data_train)
+                    result[component_id] = component.predict(data_test)
+                    evaluate(result[component_id], save_dir=component.config.data_directory)
                 else:
-                    result[component_id] = component.train(result[component_dependencies])
+                    component.train(result[component_dependencies])
                 component.save()
+            elif component_type == "ensemble":
+                if train_test_split_date:
+                    # combine predictions from different models
+                    result[component_id] = component.ensemble([result[dep] for dep in component_dependencies])
+                    evaluate(result[component_id], save_dir=component.config.data_directory)
 
         self.last_training_date = self.get_last_training_date()
 

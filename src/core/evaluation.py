@@ -1,11 +1,22 @@
 """Module which stores evaluation metrics."""
 
-from typing import Dict, Union
+import json
+import os
+from pathlib import Path
+from typing import Dict, List, Union
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 from sklearn.metrics import accuracy_score
+
+from src.common_packages import create_logger
+from src.core.model import Prediction
+
+logger = create_logger(
+    log_level=os.getenv("LOGGING_LEVEL", "INFO"),
+    logger_name=__name__,
+)
 
 
 class ClassificationMetrics(BaseModel):
@@ -22,6 +33,57 @@ class ClassificationMetrics(BaseModel):
     distribution_true: Dict[int, float]
     absolute_pred: Dict[int, int]
     absolute_true: Dict[int, int]
+
+
+def evaluate(predictions: List[Prediction], save_dir: str) -> None:
+    """
+    Evaluates model predictions against ground truth, calculates metrics,
+    and stores the results in the specified directory.
+
+    Args:
+        predictions (List[Prediction]): A list of Prediction objects containing ground truth, predicted values, and object reference.
+        save_dir (str): The directory where evaluation results will be stored.
+
+    Raises:
+        ValueError: If more than one unique component ID is present in the predictions.
+    """
+
+    logger.info("Start evaluation...")
+
+    all_preds = []
+    all_targets = []
+    ref = []
+
+    # Extract predictions and ground truths
+    for prediction in predictions:
+        all_targets.extend(prediction.ground_truth)
+        all_preds.extend(prediction.prediction)
+        ref.append(prediction.object_ref.value)
+
+    # Ensure there's only one component ID
+    unique_refs = set(ref)
+    if len(unique_refs) != 1:
+        logger.error("Multiple component IDs found: %s", unique_refs)
+        raise ValueError("There should only be a single component ID.")
+
+    component_id = unique_refs.pop()
+
+    # Calculate metrics
+    metrics = calculate_classification_metrics(np.array(all_targets), np.array(all_preds))
+
+    # Create the directory for storing metrics if it doesn't exist
+    metrics_dir = Path(save_dir) / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save the metrics to a file
+    file_path = metrics_dir / f"{component_id}.json"
+    try:
+        with file_path.open("w", encoding="utf8") as file:
+            json.dump(metrics.model_dump(), file, indent=4)
+        logger.info("Evaluation results saved to %s", file_path)
+    except Exception as e:
+        logger.error("Failed to save evaluation results to %s: %s", file_path, str(e))
+        raise
 
 
 def calculate_classification_metrics(

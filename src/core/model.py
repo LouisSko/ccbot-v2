@@ -1,11 +1,9 @@
 """Core module to define model logic."""
 
-import json
 import os
 from abc import abstractmethod
 from typing import List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
@@ -13,7 +11,6 @@ from pydantic.config import ConfigDict
 from src.common_packages import create_logger
 from src.core.base import BaseConfiguration, BasePipelineComponent, ObjectId
 from src.core.datasource import Data
-from src.core.evaluation import calculate_classification_metrics
 
 
 class TrainingInformation(BaseModel):
@@ -55,10 +52,10 @@ class Prediction(BaseModel):
     """
 
     symbol: str
+    object_ref: ObjectId  # object id of the model on which the prediction is based
     time: List[pd.Timestamp]
     prediction: List[int]  # TODO: might need to change this in the future, because we also want to do regression
     ground_truth: Optional[List[int]] = None
-    object_ref: ObjectId  # object id of the model on which the prediction is based
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -105,41 +102,6 @@ class Model(BasePipelineComponent):
 
         pass
 
-    def evaluate(self, evaluation_data: Data) -> None:
-        """Train the model.
-
-        This method must be implemented by subclasses to define the training process.
-        """
-
-        logger.info("Start evaluation...")
-
-        all_preds = []
-        all_targets = []
-
-        # 1. get predictions
-        predictions = self.predict(evaluation_data)
-
-        # 2. extract the predictions in a suitable format
-        for prediction in predictions:
-            all_targets.extend(prediction.ground_truth)
-            all_preds.extend(prediction.prediction)
-
-        # 3. calculate metrics
-        metrics = calculate_classification_metrics(np.array(all_targets), np.array(all_preds))
-
-        # 4. store the metrics
-        metrics_dir = os.path.join(self.config.data_directory, "metrics")
-
-        if not os.path.exists(metrics_dir):
-            os.makedirs(metrics_dir)
-            logger.info("Created a new directory for storing evaluation results: %s", metrics_dir)
-
-        file_path = os.path.join(metrics_dir, self.config.object_id.value + ".json")
-        with open(file_path, "w", encoding="utf8") as file:
-            json.dump(metrics.model_dump(), file, indent=4)
-
-        logger.info("Evaluation results saved to %s", file_path)
-
     def predict(self, prediction_data: Data) -> List[Prediction]:
         """Function to make predictions."""
 
@@ -147,28 +109,6 @@ class Model(BasePipelineComponent):
         #    raise ValueError("Object reference is not correct. Set 'depends_on' in the 'ModelSettings' accordingly.")
 
         return self._predict(prediction_data)
-
-    def train_and_evaluate(self, data: Data, split_date: pd.Timestamp) -> None:
-        """Function to train and test a model.
-
-        Args:
-            data (Data): the data for training and evaluation
-            split_date (pd.Timestamp): the date at which the data is split into train and test
-
-        Note:
-            It might seem a bit cumbersome to provide the split as a timestamp and not like a fraction (e.g. 0.8) or pd.Timedelta (e.g. pd.Timedelta("30d")).
-            Hower it helps to ensure that the same data is used for training different models in case we have multiple datasources.
-            Those different datasources might have different data resolution which could be problematic.
-        """
-
-        # 1. Split data in train and test
-        training_data, testing_data = self.train_test_splitter(data=data, split_date=split_date)
-
-        # 2. Train the model
-        self.train(training_data)
-
-        # 3. evaluate the model
-        self.evaluate(testing_data)
 
     def train(self, training_data: Data) -> None:
         """Train and save the model"""
