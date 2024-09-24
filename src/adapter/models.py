@@ -59,40 +59,49 @@ class LgbmClf(Model):
         logger.info("Model saved to %s", self.config.training_information.file_path_model)
 
     def _train(self, training_data: Data) -> TrainingInformation:
-        """Train the model with hyperparameter tuning."""
+        """Train the model with hyperparameter tuning.
+
+        Combines all data from training_data, checks for an existing model within the
+        same training period, and trains the model if no saved model is found.
+
+        Args:
+            training_data (Data): A Data object containing training dataframes for each symbol.
+
+        Returns:
+            TrainingInformation: Metadata about the training process, including the symbols,
+                                training period, and model file path.
+        """
 
         logger.info("Start training the model.")
 
-        data = pd.concat([data for data in training_data.data.values()]).sort_index()
-        x = data.drop(columns="target")
+        # Concatenate all data and sort by index (time)
+        data = pd.concat(training_data.data.values()).sort_index()
+
+        # Separate features (x) and target (y)
+        x = data.drop(columns=["target", "close", "atr"])
         y = data["target"]
 
-        # get the training information
+        # Retrieve symbols and training period
         symbols = list(training_data.data.keys())
-        train_start_date: pd.Timestamp = min(x.index)
-        train_end_date: pd.Timestamp = max(x.index)
+        train_start_date = x.index.min()
+        train_end_date = x.index.max()
 
-        # check whether a trained model already exists for the corresponding train period
-        full_model_path = os.path.join(
-            self.config.data_directory,
-            "models",
-            self.config.object_id.value
-            + "_"
-            + train_start_date.isoformat()
-            + "_"
-            + train_end_date.isoformat()
-            + ".joblib",
+        # Build the file path for the model based on the training period
+        model_filename = (
+            f"{self.config.object_id.value}_{train_start_date.isoformat()}_{train_end_date.isoformat()}.joblib"
         )
+        full_model_path = os.path.join(self.config.data_directory, "models", model_filename)
 
+        # Check if a model already exists for the given period
         if os.path.exists(full_model_path):
-            logger.info("Found an already saved model. Training gets skipped.")
+            logger.info("Found an existing saved model. Skipping training.")
             self.load(full_model_path)
         else:
-            # Fit the model with hyperparameter tuning
+            # Train the model and perform hyperparameter tuning if necessary
             self.model.fit(x, y)
-
             logger.info("Model training complete.")
 
+        # Return training metadata
         return TrainingInformation(
             symbols=symbols,
             train_start_date=train_start_date,
@@ -101,27 +110,48 @@ class LgbmClf(Model):
         )
 
     def _predict(self, prediction_data: Data) -> List[Prediction]:
-        """Function to make predictions."""
+        """
+        Generates predictions based on input data using the trained model.
 
+        Args:
+            prediction_data (Data): A Data object containing symbol-specific
+                                    dataframes for prediction.
+
+        Returns:
+            List[Prediction]: A list of Prediction objects containing predictions
+                            and associated metadata for each symbol.
+        """
         predictions = []
-        ground_truth = None
 
         for symbol, df in prediction_data.data.items():
 
-            if "target" in df.columns:
-                ground_truth = df["target"].to_list()
-                df = df.drop(columns="target")
+            df = df.copy()
 
+            # Extract ground truth if present
+            if "target" in df.columns:
+                ground_truth = df.pop("target")
+            else:
+                ground_truth = None
+
+            # Extract 'close' and 'atr' columns for further processing
+            close = df.pop("close").to_list()
+            atr = df.pop("atr").to_list()
+
+            # Generate predictions
             y_pred = self.model.predict(df)
 
-            time = list(df.index)
+            # Collect timestamps for predictions
+            time = df.index.to_list()
 
+            # Create and store Prediction object
             predictions.append(
                 Prediction(
                     object_ref=self.config.object_id,
                     symbol=symbol,
                     prediction=list(y_pred),
-                    ground_truth=ground_truth,
+                    ground_truth=ground_truth if ground_truth is None else ground_truth.to_list(),
+                    close=close,
+                    atr=atr,
                     time=time,
                 )
             )
@@ -166,40 +196,49 @@ class RfClf(Model):
         logger.info("Model saved to %s", self.config.training_information.file_path_model)
 
     def _train(self, training_data: Data) -> TrainingInformation:
-        """Train the model with hyperparameter tuning."""
+        """Train the model with hyperparameter tuning.
+
+        Combines all data from training_data, checks for an existing model within the
+        same training period, and trains the model if no saved model is found.
+
+        Args:
+            training_data (Data): A Data object containing training dataframes for each symbol.
+
+        Returns:
+            TrainingInformation: Metadata about the training process, including the symbols,
+                                training period, and model file path.
+        """
 
         logger.info("Start training the model.")
 
-        data = pd.concat([data for data in training_data.data.values()]).sort_index()
-        x = data.drop(columns="target")
+        # Concatenate all data and sort by index (time)
+        data = pd.concat(training_data.data.values()).sort_index()
+
+        # Separate features (x) and target (y)
+        x = data.drop(columns=["target", "close", "atr"])
         y = data["target"]
 
-        # get the training information
+        # Retrieve symbols and training period
         symbols = list(training_data.data.keys())
-        train_start_date: pd.Timestamp = min(x.index)
-        train_end_date: pd.Timestamp = max(x.index)
+        train_start_date = x.index.min()
+        train_end_date = x.index.max()
 
-        # check whether a trained model already exists for the corresponding train period
-        full_model_path = os.path.join(
-            self.config.data_directory,
-            "models",
-            self.config.object_id.value
-            + "_"
-            + train_start_date.isoformat()
-            + "_"
-            + train_end_date.isoformat()
-            + ".joblib",
+        # Build the file path for the model based on the training period
+        model_filename = (
+            f"{self.config.object_id.value}_{train_start_date.isoformat()}_{train_end_date.isoformat()}.joblib"
         )
+        full_model_path = os.path.join(self.config.data_directory, "models", model_filename)
 
+        # Check if a model already exists for the given period
         if os.path.exists(full_model_path):
-            logger.info("Found an already saved model. Training gets skipped.")
+            logger.info("Found an existing saved model. Skipping training.")
             self.load(full_model_path)
         else:
-            # Fit the model with hyperparameter tuning
+            # Train the model and perform hyperparameter tuning if necessary
             self.model.fit(x, y)
-
             logger.info("Model training complete.")
 
+        # Return training metadata
         return TrainingInformation(
             symbols=symbols,
             train_start_date=train_start_date,
@@ -208,27 +247,47 @@ class RfClf(Model):
         )
 
     def _predict(self, prediction_data: Data) -> List[Prediction]:
-        """Function to make predictions."""
+        """Generates predictions based on input data using the trained model.
+
+        Args:
+            prediction_data (Data): A Data object containing symbol-specific
+                                    dataframes for prediction.
+
+        Returns:
+            List[Prediction]: A list of Prediction objects containing predictions
+                            and associated metadata for each symbol.
+        """
 
         predictions = []
-        ground_truth = None
 
         for symbol, df in prediction_data.data.items():
 
-            if "target" in df.columns:
-                ground_truth = df["target"].to_list()
-                df = df.drop(columns="target")
+            df = df.copy()
 
+            # Extract ground truth if present
+            if "target" in df.columns:
+                ground_truth = df.pop("target")
+            else:
+                ground_truth = None
+
+            close = df.pop("close").to_list()
+            atr = df.pop("atr").to_list()
+
+            # Generate predictions
             y_pred = self.model.predict(df)
 
-            time = list(df.index)
+            # Collect timestamps for predictions
+            time = df.index.to_list()
 
+            # Create and store Prediction object
             predictions.append(
                 Prediction(
                     object_ref=self.config.object_id,
                     symbol=symbol,
                     prediction=list(y_pred),
-                    ground_truth=ground_truth,
+                    ground_truth=ground_truth if ground_truth is None else ground_truth.to_list(),
+                    close=close,
+                    atr=atr,
                     time=time,
                 )
             )
@@ -322,6 +381,8 @@ class PSARModel(Model):
         ground_truth = None
 
         for symbol, df in prediction_data.data.items():
+
+            df = df.copy()
 
             psar = ta.trend.PSARIndicator(
                 high=df["high"], low=df["low"], close=df["close"], step=self.model[symbol]["step"]

@@ -20,7 +20,7 @@ class EnsembleSettings(BaseModel):
 
     object_id: ObjectId
     depends_on: List[ObjectId]
-    ground_truth_object_ref: ObjectId  # which ground to choose from.
+    ground_truth_object_ref: ObjectId  # which ground truth, close and atr to choose from.
     task_type: Literal["classification", "regression"]
     agreement_type_clf: Literal["voting", "all"]
     data_directory: str  # directory where the data is getting saved
@@ -68,8 +68,8 @@ class EnsembleModel(BasePipelineComponent):
         # Group predictions by symbol and timestamp
         predictions_by_symbol = self._group_predictions_by_symbol_and_time(flat_predictions)
 
-        # Extract ground truth predictions if available
-        ground_truth_predictions = self._get_ground_truth_predictions(flat_predictions)
+        # Extract common values if available
+        common_values = self._get_common_values(flat_predictions)
 
         # Create ensemble results for each symbol
         ensemble_results = []
@@ -82,7 +82,7 @@ class EnsembleModel(BasePipelineComponent):
                 raise ValueError(f"Unknown task type: {self.config.task_type}")
 
             # Get the ground truth for this symbol if available
-            ground_truth_for_symbol = ground_truth_predictions.get(symbol)
+            common_value_for_symbol = common_values.get(symbol)
 
             # Create a new Prediction object for each symbol
             ensemble_results.append(
@@ -91,7 +91,9 @@ class EnsembleModel(BasePipelineComponent):
                     object_ref=self.config.object_id,
                     time=list(predictions_by_time.keys()),  # Using the timestamps from the grouped predictions
                     prediction=ensemble_predictions,
-                    ground_truth=ground_truth_for_symbol,  # Attach ground truth if found
+                    ground_truth=common_value_for_symbol.get("ground_truth", None),  # Attach ground truth if found
+                    close=common_value_for_symbol.get("close"),
+                    atr=common_value_for_symbol.get("atr"),
                 )
             )
 
@@ -117,24 +119,28 @@ class EnsembleModel(BasePipelineComponent):
                 grouped_predictions[pred.symbol][t].append(p)
         return grouped_predictions
 
-    def _get_ground_truth_predictions(self, predictions: List[Prediction]) -> Dict[str, List[float]]:
-        """Fetch ground truth from predictions based on the specified ground_truth_object_ref.
+    def _get_common_values(self, predictions: List[Prediction]) -> Dict[str, List[float]]:
+        """Fetch common_values from predictions based on the specified ground_truth_object_ref.
 
         Args:
         predictions (List[Prediction]): The list of predictions.
 
         Returns:
-        Dict[str, List[float]]: A dictionary mapping symbols to their ground truth values.
+        Dict[str, Dict[str, float]]: A dictionary mapping symbols to their ground truth values.
         """
 
-        ground_truth_predictions = {}
+        common_values = {}
 
         for pred in predictions:
             if pred.object_ref == self.config.ground_truth_object_ref:
                 # Store the ground truth for the symbol
-                ground_truth_predictions[pred.symbol] = pred.ground_truth
+                common_values[pred.symbol] = {
+                    "ground_truth": pred.ground_truth,
+                    "close": pred.close,
+                    "atr": pred.atr,
+                }
 
-        return ground_truth_predictions
+        return common_values
 
     def _classification_voting(self, predictions_by_time: Dict[pd.Timestamp, List[int]]) -> List[int]:
         """Perform voting for classification tasks.

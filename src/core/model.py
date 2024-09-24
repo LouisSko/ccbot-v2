@@ -2,7 +2,7 @@
 
 import os
 from abc import abstractmethod
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -48,7 +48,7 @@ class ModelConfiguration(BaseConfiguration):
 class Prediction(BaseModel):
     """Result of the model predictions.
 
-    For each symbol and timestamp only a single prediction can be made
+    For each symbol we have a prediction. This can include multiple preds
     """
 
     symbol: str
@@ -56,6 +56,8 @@ class Prediction(BaseModel):
     time: List[pd.Timestamp]
     prediction: List[int]  # TODO: might need to change this in the future, because we also want to do regression
     ground_truth: Optional[List[int]] = None
+    close: Optional[List[float]] = None  # current price
+    atr: Optional[List[float]] = None  # current atr value. Might be used for stop loss/take profit calculation
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -66,7 +68,6 @@ logger = create_logger(
 )
 
 
-# TODO: maybe also add settings here in the same way as for the datasource
 class Model(BasePipelineComponent):
     """Abstract base class for machine learning models."""
 
