@@ -198,43 +198,49 @@ class CCXTFuturesTradingEngine(TradingEngine):
         return trade_signal
 
     def execute_orders(self, trade_signals: List[TradeSignal]):
-        """Places trades based on predictions.
+        """
+        Places trades based on predictions from the model.
 
         Args:
-            trade_signals (List[TradeSignal]): Predictions from the model for each symbol.
+            trade_signals (List[TradeSignal]): A list of TradeSignal objects,
+                                            each containing trade details for a symbol.
         """
+        logger.info("+" * 50)
+        logger.info("Trade signals: %s", trade_signals)
 
-        # first lets close all old open orders.
-        # this might overwrite things if we have more then one tradesignal for a single symbol
-        # TODO: only if they are from the timeframe before
+        # Log current open positions
+        self.log_open_positions()
+
+        # Close all open orders for the symbols in trade signals, if applicable
         for trade_signal in trade_signals:
-            if self.config.exchange.fetch_open_orders(symbol=trade_signal.symbol) != []:
+            open_orders = self.config.exchange.fetch_open_orders(symbol=trade_signal.symbol)
+            if open_orders:
                 self.config.exchange.cancel_all_orders(symbol=trade_signal.symbol)
-                logger.info("Canceled all open orders for symbol: %s", trade_signal.symbol)
 
-                # track if there are any symbols for whom an open position exists but no prediction
-                self.symbols_with_open_positions.remove(trade_signal.symbol)
+                # Remove symbol from the list of open positions if it exists
+                if trade_signal.symbol in self.symbols_with_open_positions:
+                    self.symbols_with_open_positions.remove(trade_signal.symbol)
 
-        # close open positions of all symbols, where no prediction information exists
-        # This can be because "no_trade" gets predicted or because no data is available
-        for symbol in self.symbols_with_open_positions:
+        # Close positions for symbols where no prediction exists
+        for symbol in list(self.symbols_with_open_positions):
             hold_side = self._determine_position(symbol=symbol)
             self._close_trade(symbol=symbol, side=hold_side)
 
-        # now open trades (potentially reverse trades)
+        # Open new trades or reverse existing ones based on predictions
         for trade_signal in trade_signals:
-
             hold_side = self._determine_position(symbol=trade_signal.symbol)
 
             if trade_signal.position_side == hold_side:
-                logger.info("Keeping position for symbol: %s with side: %s", trade_signal.symbol, hold_side)
+                logger.info("Keeping current position for symbol: %s with side: %s", trade_signal.symbol, hold_side)
             else:
-                if hold_side != "no_trade":
-                    logger.info("Open reverse trade.")
+                if hold_side:
+                    logger.info("Reversing position for symbol: %s", trade_signal.symbol)
                     self._close_trade(symbol=trade_signal.symbol, side=hold_side)
 
+                # Place a new order
                 self._create_order(trade_signal)
 
+        # Log updated open positions
         self.log_open_positions()
 
     def _close_trade(self, symbol: str, side: Literal["buy", "sell"]) -> None:
