@@ -9,7 +9,7 @@ from typing import Dict, List, Literal
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from src.core.base import BaseConfiguration, BasePipelineComponent, ObjectId
 from src.core.model import Prediction
@@ -24,6 +24,16 @@ class EnsembleSettings(BaseModel):
     task_type: Literal["classification", "regression"]
     agreement_type_clf: Literal["voting", "all"]
     data_directory: str  # directory where the data is getting saved
+
+    @model_validator(mode="after")
+    def check_ground_truth_in_depends_on(cls, values):  # pylint: disable=no-self-argument
+        """Validate that the ground_truth_object_ref exists in the depends_on list."""
+        ground_truth = values.ground_truth_object_ref
+        depends_on = values.depends_on
+
+        if ground_truth not in depends_on:
+            raise ValueError("The ground_truth_object_ref must be one of the object IDs in depends_on.")
+        return values
 
 
 class EnsembleConfiguration(BaseConfiguration):
@@ -126,22 +136,43 @@ class EnsembleModel(BasePipelineComponent):
 
         return ground_truth_predictions
 
-    def _classification_voting(self, predictions_by_time: Dict[pd.Timestamp, List[float]]) -> List[float]:
+    def _classification_voting(self, predictions_by_time: Dict[pd.Timestamp, List[int]]) -> List[int]:
         """Perform voting for classification tasks.
 
         Args:
-        predictions_by_time (Dict[pd.Timestamp, List[float]]): Predictions grouped by timestamp.
+        predictions_by_time (Dict[pd.Timestamp, List[int]]): Predictions grouped by timestamp.
 
         Returns:
-        List[float]: The majority-vote result for each timestamp.
+        List[int]: The majority-vote result for each timestamp.
         """
 
+        def majority_vote(preds: List[int]) -> int:
+            """checks majority vote.
+
+            Returns 0 in case of a draw
+            """
+            counts = Counter(preds).most_common()
+            # Check for a tie between the top two most common predictions
+            if len(counts) > 1 and counts[0][1] == counts[1][1]:
+                return 0  # Return 0 in case of a tie
+            return counts[0][0]  # Return the most common prediction otherwise
+
+        def check_all_same(preds: List[int]) -> int:
+            """Checks if all entries in the list are the same and returns the value.
+
+            Returns zero in case not all items are the same
+            """
+
+            if all(pred == preds[0] for pred in preds):
+                return preds[0]
+            return 0
+
         if self.config.agreement_type_clf == "voting":
-            return [Counter(preds).most_common(1)[0][0] for preds in predictions_by_time.values()]
+            return [majority_vote(preds) for preds in predictions_by_time.values()]
         if self.config.agreement_type_clf == "all":
-            return [self._check_all_same(preds) for preds in predictions_by_time.values()]
-        else:
-            raise ValueError("specified agreement type is invalid. Choose 'voting' or 'all'.")
+            return [check_all_same(preds) for preds in predictions_by_time.values()]
+
+        raise ValueError("specified agreement type is invalid. Choose 'voting' or 'all'.")
 
     def _regression_mean(self, predictions_by_time: Dict[pd.Timestamp, List[float]]) -> List[float]:
         """Perform mean averaging for regression tasks.
@@ -169,13 +200,3 @@ class EnsembleModel(BasePipelineComponent):
             settings_path=settings_path,
             settings=self.config,
         )
-
-    def _check_all_same(self, l: list) -> int:
-        """Checks if all entries in the list are the same and returns the value.
-
-        Returns zero in case not all items are the same
-        """
-
-        if all(x == l[0] for x in l):
-            return l[0]
-        return 0

@@ -80,7 +80,7 @@ class Model(BasePipelineComponent):
                 self.load()
 
     @abstractmethod
-    def load(self) -> None:
+    def load(self, model_path: Optional[str] = None) -> None:
         """Load the model from disk."""
 
     @abstractmethod
@@ -124,17 +124,6 @@ class Model(BasePipelineComponent):
         self.config.training_information = self._train(training_data)
 
         logger.info("Training process completed.")
-
-    def train_test_splitter(self, data: Data, split_date: pd.Timestamp) -> Tuple[Data, Data]:
-        """Splits the data into training and test set."""
-
-        data_train, data_test = {}, {}
-
-        for key, df in data.data.items():
-            data_train[key] = df[df.index <= split_date].copy()
-            data_test[key] = df[df.index > split_date].copy()
-
-        return Data(object_ref=data.object_ref, data=data_train), Data(object_ref=data.object_ref, data=data_test)
 
     def create_configuration(self) -> ModelConfiguration:
         """Returns the configuration of the class."""
