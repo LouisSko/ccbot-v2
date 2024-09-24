@@ -28,7 +28,7 @@ class BaseConfiguration(BaseModel):
     def check_component_type(cls, value):  # pylint: disable=no-self-argument
         """check if timestamps are set correctly."""
 
-        component_types = ["datasource", "processor", "merger", "model", "ensemble"]
+        component_types = ["datasource", "processor", "merger", "model", "ensemble", "generator"]
 
         if value not in component_types:
             raise ValueError(f"{value} must be on of the following components: {component_types}")
