@@ -110,6 +110,7 @@ ENV/
 env.bak/
 venv.bak/
 
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -155,4 +156,6 @@ Chroma/
 .venv
 *.pyc
 
-src/configs/
+
+configs/
+mock/
