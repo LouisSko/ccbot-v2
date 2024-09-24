@@ -2,20 +2,19 @@
 
 import json
 import os
-from abc import ABC, abstractmethod
+from abc import ABC
 from importlib import import_module
-from itertools import chain
 from typing import Dict, List, Optional, Type, Union
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
+from src.core.generator import TradeSignal
 from src.common_packages import CustomJSONEncoder, create_logger, timestamp_decoder
 from src.core.base import BaseConfiguration, BasePipelineComponent
 from src.core.datasource import Data, Datasource
-from src.core.engine import TradeSignal
 from src.core.evaluation import evaluate
-from src.core.model import Model, Prediction, TrainingInformation
+from src.core.model import Model, TrainingInformation
 from src.core.splitter import data_splitter
 
 logger = create_logger(
@@ -50,12 +49,6 @@ class Pipeline(ABC):
         self.components: dict = self._initialize_components(self.config)
         self.execution_order, self.dependency_structure = self._get_execution_order()
 
-    # @abstractmethod
-    # def _generate_trade_signals(self, result: Dict[str, List[Prediction]]) -> TradeSignal:
-    #     """generate trade signals based on predictions."""
-
-    #     pass
-
     def trigger(self) -> List[TradeSignal]:
         """Triggers the pipeline."""
 
@@ -78,46 +71,12 @@ class Pipeline(ABC):
             elif component_type == "model":
                 result[component_id] = component.predict(result[component_dependencies])
             elif component_type == "ensemble":
-                # Flatten the list of lists into a single list of Predictions
                 result[component_id] = component.ensemble([result[dep] for dep in component_dependencies])
-
-        # trade_signals = self._generate_trade_signals(result)
-
-        # get the final predictions
-        final_predictions: List[Prediction] = result[self.execution_order[-1]]
-
-        trade_signals = []
-
-        for prediction in final_predictions:
-
-            for time, pred in zip(prediction.time, prediction.prediction):
-
-                if pred == 1:
-                    position_side = "buy"
-                    # limit_price = last_price * (1 + reduction)
-                elif pred == -1:
-                    position_side = "sell"
-                else:
-                    continue
-
-                # TODO: add limit order and stop loss / take profit functionality.
-                # -> for that I need the current close price
-                # Create a TradeSignal for this prediction
-                trade_signal = TradeSignal(
-                    time=time,
-                    symbol=prediction.symbol,
-                    order_type="market",  # or limit
-                    position_side=position_side,
-                    # limit_price=10000 if position_side == "buy" else 11000,  # Example logic for setting limit price
-                    # stop_loss_price=9500 if position_side == "buy" else 11500,  # Stop loss for risk management
-                    # take_profit_price=12000 if position_side == "buy" else 9000,  # Take profit target
-                )
-
-                trade_signals.append(trade_signal)
+            elif component_type == "generator":
+                trade_signals = component.generate_trade_signals(result[component_dependencies])
 
         logger.info("Pipeline execution completed.")
 
-        # return the final result of the pipeline
         return trade_signals
 
     def train(self) -> None:
