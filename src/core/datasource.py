@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 
 import joblib
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.common_packages import create_logger
 from src.core.base import BaseConfiguration, BasePipelineComponent, ObjectId

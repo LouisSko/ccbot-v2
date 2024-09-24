@@ -70,7 +70,7 @@ class Pipeline(ABC):
             component_type = self.components[component_id]["config"].component_type
 
             if component_type == "datasource":
-                result[component_id] = component.scrape_data_historic()
+                result[component_id] = component.scrape_data_current()
             elif component_type == "processor":
                 result[component_id] = component.process(result[component_dependencies])
             elif component_type == "merger":
