@@ -677,9 +677,9 @@ class MockExchange(ccxt.bitget):
 
             # Remove the order from pending orders
             self.pending_orders.remove(order)
-            logger.info("Canceled order with ID: %s", order["id"])
+            logger.info("Canceled order with ID: %s.", order["id"])
 
-        logger.info("Canceled %d orders for symbol %s", len(orders_to_remove), symbol)
+        logger.info("Canceled %d orders for symbol %s.", len(orders_to_remove), symbol)
 
     def cancel_all_orders(self, symbol: str, params: Optional[Dict] = None) -> None:
         """Cancels all orders for a specific symbol.

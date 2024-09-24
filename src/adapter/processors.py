@@ -17,31 +17,6 @@ logger = create_logger(
 )
 
 
-class StopLossATR(FeatureGenerator):
-    """Datapreprocessor for calculating the stop losses and take profits."""
-
-    def create_features(self, data: Data) -> Data:
-        """Calculates and adds features to the dataframes in the input dictionary. Optionally filters the output based on given timestamps."""
-
-        data_processed = {}
-        window = 14
-
-        # only calculate ATR
-        for key, df in data.data.items():
-
-            if len(df) <= window:
-                logger.warning("Calculating ATR is not possible due to not enough data.")
-                continue
-
-            df["atr"] = ta.volatility.AverageTrueRange(
-                high=df["high"], low=df["low"], close=df["close"], window=window
-            ).average_true_range()
-
-            data_processed[key] = df.iloc[[-1]].copy()
-
-        return Data(object_ref=self.config.object_id, data=data_processed)
-
-
 class FeaturesFearGreed(FeatureGenerator):
     """Data Processor for calculating features for fear and greed index."""
 
@@ -373,6 +348,10 @@ def ta_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df["psar_up"] = psar.psar_up() > 0
         df["psar_down"] = psar.psar_down() < 0
 
+        df["atr"] = ta.volatility.AverageTrueRange(
+            high=df["high"], low=df["low"], close=df["close"], window=14
+        ).average_true_range()
+
     return df
 
 
@@ -688,7 +667,7 @@ def cleaning_past_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.dropna()
 
     # Drop the specified columns
-    df = df.drop(columns=["open", "high", "low", "close", "volume", "symbol"])
+    df = df.drop(columns=["open", "high", "low", "volume", "symbol"])
 
     return df
 

@@ -37,8 +37,8 @@ class TradingBot:
                 self.config.pipeline.train()
 
             # log the current date of the pipeline
-            self.pipeline_current_date = self.config.pipeline.get_current_simulation_date()
-            
+            self.pipeline_current_date = self.config.pipeline.get_current_date()
+
             logger.info("Pipeline current date: %s", self.pipeline_current_date)
             time.sleep(5)
         self.timeframe = self.config.pipeline.config.timeframe
@@ -65,17 +65,16 @@ class TradingBot:
             # get current date fo the mock exchange
             current_date = self.config.trading_engine.config.exchange.current_date
 
-    
             self.config.trading_engine.config.exchange.check_limit_orders()
             self.config.trading_engine.config.exchange.check_stop_losses()
             self.config.trading_engine.config.exchange.check_take_profit()
 
             # exexute pipeline if the two dates match
             if self.pipeline_current_date == current_date:
-                logger.info("\n Simulation current timestep: %s \n", current_date)
+                logger.info("\n\n Simulation current timestep: %s \n", current_date)
                 trading_signals = self.config.pipeline.trigger()
                 self.config.trading_engine.execute_orders(trading_signals)
-                self.pipeline_current_date = self.config.pipeline.get_current_simulation_date()
+                self.pipeline_current_date = self.config.pipeline.get_current_date()
 
             # train the pipeline every month.
             if current_date >= self.config.pipeline.last_training_date + pd.DateOffset(months=4):
@@ -115,7 +114,7 @@ class TradingBot:
                 path = os.path.join(self.config.pipeline.config.save_dir, "trading_results.json")
                 self.config.trading_engine.config.exchange.save_trade_history(path)
                 break
-            
+
             # real time - set bot to sleep
             if not self.config.simulation:
                 time_to_sleep = self.get_next_execution_time()
