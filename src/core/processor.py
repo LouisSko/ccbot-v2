@@ -2,7 +2,7 @@
 
 import os
 from abc import abstractmethod
-from typing import List
+from typing import List, Type, Union
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,7 +36,7 @@ class DataProcessorConfiguration(BaseConfiguration):
         Literal=True,
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
-    settings: DataProcessorSettings
+    settings: Union[DataProcessorSettings, Type[DataProcessorSettings]]
 
 
 class DataMergerSettings(BaseModel):

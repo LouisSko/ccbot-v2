@@ -2,7 +2,7 @@
 
 import os
 from abc import abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Type, Union
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -30,7 +30,10 @@ class ModelSettings(BaseModel):
     object_id: ObjectId
     depends_on: ObjectId  # ID of the processor this model depends on.
     data_directory: str  # directory where the data is getting saved
+    timeframe: Optional[pd.Timedelta] = None
     training_information: Optional[TrainingInformation] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class ModelConfiguration(BaseConfiguration):
@@ -42,7 +45,7 @@ class ModelConfiguration(BaseConfiguration):
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
 
-    settings: ModelSettings
+    settings: Union[ModelSettings, Type[ModelSettings]]
 
 
 class Prediction(BaseModel):

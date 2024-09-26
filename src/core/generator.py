@@ -2,7 +2,7 @@
 
 import os
 from abc import abstractmethod
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Type, Union
 
 import pandas as pd
 from pydantic import BaseModel, Field
@@ -78,7 +78,7 @@ class GeneratorConfiguration(BaseConfiguration):
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
 
-    settings: GeneratorSettings
+    settings: Union[GeneratorSettings, Type[GeneratorSettings]]
 
 
 class TradeSignalGenerator(BasePipelineComponent):

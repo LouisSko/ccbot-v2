@@ -5,7 +5,7 @@ It creates ensemble predictions based on individual predictions of multiple mode
 
 from collections import Counter
 from itertools import chain
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -45,7 +45,7 @@ class EnsembleConfiguration(BaseConfiguration):
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
 
-    settings: EnsembleSettings
+    settings: Union[EnsembleSettings, Type[EnsembleSettings]]
 
 
 class EnsembleModel(BasePipelineComponent):

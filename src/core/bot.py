@@ -32,15 +32,14 @@ class TradingBot:
 
         if self.config.simulation:
             logger.info("Use Trading Bot in Simulation Mode.")
-            # train the pipeline if it hasn't been trained yet. Do this only in simulation mode since it might be risky.
-            if not self.config.pipeline.last_training_date:
-                self.config.pipeline.train()
+
+            self.config.pipeline.train()
 
             # log the current date of the pipeline
             self.pipeline_current_date = self.config.pipeline.get_current_date()
 
             logger.info("Pipeline current date: %s", self.pipeline_current_date)
-            time.sleep(5)
+            # time.sleep(5)
         self.timeframe = self.config.pipeline.config.timeframe
         self.tf_in_mins = self.timeframe.total_seconds() / 60
 
@@ -112,7 +111,7 @@ class TradingBot:
             if self.config.simulation and self.pipeline_current_date is None:
                 logger.info("End of simulation. No more data available.")
                 path = os.path.join(self.config.pipeline.config.save_dir, "trading_results.json")
-                self.config.trading_engine.config.exchange.save_trade_history(path)
+                self.config.trading_engine.config.exchange.save_trade_history(path)                
                 break
 
             # real time - set bot to sleep

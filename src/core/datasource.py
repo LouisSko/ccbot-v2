@@ -3,7 +3,7 @@
 import os
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Type, Union
 
 import joblib
 import pandas as pd
@@ -37,6 +37,7 @@ class TrainingData(Data):
                 raise ValueError(f"Target column is missing in the data for symbol '{symbol}'")
 
 
+# TODO mock_data_start_date and end date should not be defined here
 class DatasourceSettings(BaseModel):
     """Settings used to configure the datasource."""
 
@@ -78,7 +79,7 @@ class DatasourceConfiguration(BaseConfiguration):
         description="Type of the configuration (e.g., model, processor). Do not change this value",
     )
 
-    settings: DatasourceSettings
+    settings: Union[DatasourceSettings, Type[DatasourceSettings]]
 
 
 class Datasource(BasePipelineComponent):
