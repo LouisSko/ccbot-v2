@@ -141,6 +141,43 @@ class FeaturesExchange(FeatureGenerator):
         return Data(object_ref=self.config.object_id, data=data_processed)
 
 
+class FeaturesPSAR(FeatureGenerator):
+    """Datapreprocessor for Classification Problems."""
+
+    def create_features(self, data: Data) -> Data:
+        """Calculates and adds features to the dataframes in the input dictionary. Optionally filters the output based on given timestamps."""
+
+        logger.info("Start calculating features...")
+
+        data_processed = {}
+        atr_window = 14
+
+        for symbol, df in data.data.items():
+
+            df = df.copy()
+
+            df["atr"] = ta.volatility.AverageTrueRange(
+                high=df["high"], low=df["low"], close=df["close"], window=atr_window, fillna=False
+            ).average_true_range()
+
+            df = df.iloc[atr_window - 1 :].copy()
+            df = df.dropna()
+
+            if not df.empty:
+                data_processed[symbol] = df
+
+            logger.debug(
+                "Processed Symbol: %s. Calculated features: %s, Dataset entries: %s",
+                symbol,
+                len(df.columns),
+                len(df),
+            )
+
+        logger.info("Calculation of features finished.")
+
+        return Data(object_ref=self.config.object_id, data=data_processed)
+
+
 class TargetSettings(DataProcessorSettings):
     """settings for target generator."""
 
@@ -165,10 +202,38 @@ class TargetUpDownNo(TargetGenerator):
         target_series = {}
         # target is the return
         for symbol, df in data.data.items():
+
             ret: pd.Series = (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
             target = ret.apply(
                 lambda x: 1 if x > self.config.target_value else -1 if x < -self.config.target_value else 0
             )
+            target.name = "target"
+            target_series[symbol] = target.dropna()
+
+        logger.info("Calculation of target finished.")
+
+        return Data(object_ref=self.config.object_id, data=target_series)
+
+
+# TODO: this would only work for a long only scenario since we only predict 1 or 0
+class TargetUpDown(TargetGenerator):
+    """preprocessor for classification predicting"""
+
+    def __init__(self, config: TargetSettings):
+        self.config = config
+
+    def create_target(self, data: Data) -> Data:
+        """Creates the target variable as the return compared to the previous timestep."""
+
+        logger.info("Start calculating target...")
+
+        target_shift = 1  #  The number of timesteps to look ahead for the return calculation.
+        target_series = {}
+        # target is the return
+        for symbol, df in data.data.items():
+
+            ret: pd.Series = (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
+            target = ret.apply(lambda x: 1 if abs(x) > self.config.target_value else 0)
             target.name = "target"
             target_series[symbol] = target.dropna()
 
