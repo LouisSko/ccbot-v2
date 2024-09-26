@@ -8,6 +8,7 @@ from typing import List, Optional
 import ccxt
 import numpy as np
 import pandas as pd
+import requests
 from tqdm import tqdm
 
 from src.common_packages import create_logger
@@ -39,7 +40,7 @@ class ExchangeDatasource(Datasource):
         self.exchange = self._load_exchange()
 
         if self.config.symbols is None:
-            self._determine_symbols(number=50, threshold=2_000_000)
+            self._determine_symbols(number=20, threshold=2_000_000)
 
     def _load_exchange(self) -> ccxt.Exchange:
         """Loads the exchange."""
@@ -86,7 +87,7 @@ class ExchangeDatasource(Datasource):
         all_symbols = [symbol for symbol in tickers if symbol.endswith("USDT")]
 
         # fetch the data for all symbols and select the n best coins with the highest volume
-        result = self._fetch_ohlcv(symbols=all_symbols, limit=7, timeframe="1d")
+        result = self._fetch_ohlcv(symbols=all_symbols, limit=7, timeframe=pd.Timedelta("1d"))
 
         volumes = []
         for symbol, df in result.data.items():
@@ -112,7 +113,11 @@ class ExchangeDatasource(Datasource):
         data = {}
         for symbol, df in self.mock_data.data.items():
             if symbols is None or symbol in symbols:
-                data[symbol] = df.loc[: self.simulation_current_date].iloc[:-1].copy()
+                df = df.loc[: self.simulation_current_date].iloc[:-1].copy()
+                
+                # only return the symbols with enough data
+                if len(df) >= self.config.current_data_scrape_limit:
+                    data[symbol] = df
 
         return Data(data=data, object_ref=self.config.object_id)
 
@@ -143,7 +148,11 @@ class ExchangeDatasource(Datasource):
         for symbol, df in self.mock_data.data.items():
 
             if symbols is None or symbol in symbols:
-                data[symbol] = df.loc[: self.simulation_current_date][-self.config.current_data_scrape_limit :].copy()
+                df = df.loc[: self.simulation_current_date][-self.config.current_data_scrape_limit :].copy()
+
+                # only return the symbols with enough data
+                if len(df) >= self.config.current_data_scrape_limit:
+                    data[symbol] = df
 
         self.simulation_current_date += pd.Timedelta(self.config.timeframe)
 
@@ -159,7 +168,7 @@ class ExchangeDatasource(Datasource):
             symbols (Optional[List[str]]): optionally provide symbols from whom to fetch the data
 
         Returns:
-            Dict[str, pd.DataFrame]: Current data from the real exchange.
+            Data: Current data from the real exchange.
         """
 
         return self._fetch_ohlcv(symbols=symbols)
@@ -222,6 +231,9 @@ class ExchangeDatasource(Datasource):
 
         if data is None:
             raise ValueError("Non data fetched.")
+
+        # only return the symbols with enough data
+        data = {key: values for key, values in data.items() if len(values) >= self.config.current_data_scrape_limit}
 
         for key, values in data.items():
             logger.info("Fetched Symbol: %s. Dataset entries: %s", key, len(values))
@@ -392,3 +404,122 @@ def extract_timedelta_str(timedelta: pd.Timedelta) -> str:
         return f"{components.minutes}m"
     else:
         raise ValueError("No valid format.")
+
+
+class FearGreedDatasourceSettings(DatasourceSettings):
+    """Settings for fear and greed datasource"""
+
+    timeframe: pd.Timedelta = pd.Timedelta("4h")
+    current_data_scrape_limit: int = 29
+
+
+class FearGreedDataSource(Datasource):
+    """Datasource for the exchange."""
+
+    def __init__(self, config: ExchangeDatasourceSettings):
+        """Initialize the DataSource object with specific parameters."""
+
+        super().__init__(config)
+
+        self.config = config
+
+    def _scrape_mock_data_historic(self, symbols: List[str]) -> Data:
+        """Scrape historic data from mock data.
+
+        Returns:
+            Dict[str, pd.DataFrame]: Historic data from mock data up to the current date.
+        """
+
+        df = self.mock_data.data.get("all").loc[: self.simulation_current_date].iloc[:-1].copy()
+
+        return Data(data={"all": df}, object_ref=self.config.object_id)
+
+    def _scrape_real_data_historic(self, symbols: List[str]) -> Data:
+        """Scrape historic data from the datasource.
+
+        Returns:
+            Data: Historic data
+        """
+
+        return self.fetch_data(start=self.config.scrape_start_date, end=self.config.scrape_end_date)
+
+    def _scrape_mock_data_current(self, symbols: List[str]) -> Data:
+        """Scrape and return historical data up to the most recently completed candle.
+
+        This method retrieves data from the mock data source for the current simulation time,
+        ensuring that only fully completed candles are returned to prevent data leakage. The current
+        simulation date is then advanced by the configured timeframe. If the simulation date exceeds
+        the end date, the simulation is marked as complete.
+
+        Args:
+            symbols (List[str]): provide symbols from whom to fetch the data
+
+        """
+
+        df = (
+            self.mock_data.data.get("all")
+            .loc[: self.simulation_current_date][-self.config.current_data_scrape_limit :]
+            .copy()
+        )
+
+        self.simulation_current_date += pd.Timedelta(self.config.timeframe)
+
+        if self.simulation_current_date > self.config.simulation_end_date:
+            self.simululation_end = True
+
+        return Data(data={"all": df}, object_ref=self.config.object_id)
+
+    def _scrape_real_data_current(self, symbols: List[str]) -> Data:
+        """Scrape current data from the real exchange.
+
+        Returns:
+            Data: Current fear and greed index from the api.
+        """
+
+        return self.fetch_data()
+
+    def fetch_data(self, start: Optional[pd.Timestamp] = None, end: Optional[pd.Timestamp] = None) -> Data:
+        """scrape all data from fear and greed index.
+
+        Fear and greed index data from alternative.me. Data is only available on daily basis
+
+        Args:
+            start (Optional[pd.Timestamp]): optional start date for scraping.
+            end: (Optional[pd.Timestamp]): optional end date for scraping.
+        """
+
+        if start:
+            now = pd.Timestamp.now(tz="UTC")
+            limit = (now - start).days + 1
+        else:
+            limit = self.config.limit_current
+
+        response = requests.get(f"https://api.alternative.me/fng/?limit={limit}", timeout=10)
+        result = response.json()
+
+        df = self._format_data(result)
+
+        if end:
+            df = df.loc[:end].copy()
+
+        return Data(data={"all": df}, object_ref=self.config.object_id)
+
+    def _format_data(self, result: pd.DataFrame) -> pd.DataFrame:
+        """Format raw OHLCV data into a Pandas DataFrame.
+
+        Args:
+            ohlcv (pd.DataFrame): dataframe containing fear and greed data as dict
+
+        Returns:
+            pandas.DataFrame: Formatted DataFrame
+        """
+
+        df = pd.DataFrame(result["data"])
+        df[["timestamp", "value"]] = df[["timestamp", "value"]].astype("float32")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        df = df.rename(columns={"timestamp": "time", "value": "fear_n_greed"})
+        df = df.drop(["time_until_update", "value_classification"], axis=1)
+        df = df.set_index("time")
+        df = df.sort_index()
+
+        return df
