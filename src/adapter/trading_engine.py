@@ -216,10 +216,10 @@ class CCXTFuturesTradingEngine(TradingEngine):
             open_orders = self.config.exchange.fetch_open_orders(symbol=trade_signal.symbol)
             if open_orders:
                 self.config.exchange.cancel_all_orders(symbol=trade_signal.symbol)
-
-                # Remove symbol from the list of open positions if it exists
-                if trade_signal.symbol in self.symbols_with_open_positions:
-                    self.symbols_with_open_positions.remove(trade_signal.symbol)
+            
+            # Remove symbol from the list of open positions if it exists
+            if trade_signal.symbol in self.symbols_with_open_positions:
+                self.symbols_with_open_positions.remove(trade_signal.symbol)
 
         # Close positions for symbols where no prediction exists
         for symbol in list(self.symbols_with_open_positions):
@@ -269,7 +269,7 @@ class CCXTFuturesTradingEngine(TradingEngine):
         logger.info(50 * "-")
         logger.info("create new order")
 
-        trade_signal = self.determine_order_size(trade_signal, method="free_balance", risk_pct=0.5)
+        trade_signal = self.determine_order_size(trade_signal, method="risk_based", risk_pct=0.01)
 
         if trade_signal.order_amount is None:
             logger.info("Amount is None. No order gets placed.")
