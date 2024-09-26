@@ -181,3 +181,192 @@ def f_score(precision: float, recall: float, beta: int = 1):
     if precision + recall == 0:
         return 0.0
     return (1 + beta**2) * (precision * recall) / ((beta**2 * precision) + recall)
+
+
+def multi_target_precision(y_true: np.ndarray, y_pred: np.ndarray):
+    """Function for multi-target precision"""
+    precision = {}
+    classes = [1, -1]  # 1 for long, -1 for short
+
+    for c in classes:
+        tp = sum((y_true == y_pred) & (y_pred == c))
+        fp = sum((y_true != y_pred) & (y_pred == c))
+        if (tp + fp) > 0:
+            precision[c] = tp / (tp + fp)
+        else:
+            precision[c] = 0
+
+    return np.mean(list(precision.values()))
+
+
+def multi_target_recall(y_true: np.ndarray, y_pred: np.ndarray):
+    """Function for multi-target recall"""
+
+    recall = {}
+    classes = [1, -1]  # 1 for long, -1 for short
+    for c in classes:
+        tp = sum((y_true == y_pred) & (y_pred == c))
+        fn = sum((y_true != y_pred) & (y_true == c))
+        if (tp + fn) > 0:
+            recall[c] = tp / (tp + fn)
+        else:
+            recall[c] = 0
+
+    return np.mean(list(recall.values()))
+
+
+def adapted_f1_score(y_true: np.ndarray, y_pred: np.ndarray):
+    """Compute adapted F1 score where precision is twice as important as recall"""
+
+    precision = multi_target_precision(y_true, y_pred)
+    recall = multi_target_recall(y_true, y_pred)
+
+    # Weigh precision as twice as important as recall
+    f1_score = (2 * precision * recall) / (2 * precision + recall) if (2 * precision + recall) > 0 else 0
+
+    return f1_score
+
+
+"""Module for storing plotting functions for visualizing trades."""
+
+from typing import Literal
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+
+def plot_cumulative_profit(df, col: Literal["profit_percent", "profit"] = "profit"):
+    """Plots the cumulative profit and net profit over time.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing 'close_date', 'profit', and 'net_profit' columns.
+        return_type (str): Type of return to calculate. Options are 'simple' or 'log'.
+
+    Raises:
+        ValueError: If an invalid return type is specified.
+    """
+
+    df["close_date"] = pd.to_datetime(df["close_date"])
+
+    # Calculate cumulative sum of simple returns (profits)
+    df["cumulative_profit"] = df[col].astype(float).cumsum()
+    df["cumulative_net_profit"] = df[f"net_{col}"].astype(float).cumsum()
+
+    # Plotting
+    plt.figure(figsize=(12, 6))
+    plt.plot(df["close_date"], df["cumulative_profit"], linestyle="-", label="Cumulative Profit")#, marker="o")
+    plt.plot(df["close_date"], df["cumulative_net_profit"], linestyle="-", label="Cumulative Net Profit")#, marker="o")
+
+    plt.title("Cumulative Profit Over Time")
+    plt.xlabel("Date")
+    plt.ylabel("Cumulative Profit")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+def plot_cumulative_profit_by_symbol(df):
+    # Sort the dataframe by date
+    df = df.sort_values(by="close_date")
+
+    # Group by symbol and calculate cumulative profit
+    df["cumulative_profit"] = df.groupby("symbol")["profit"].cumsum()
+
+    # Plotting
+    plt.figure(figsize=(12, 6))
+    for symbol, group in df.groupby("symbol"):
+        plt.plot(group["close_date"], group["cumulative_profit"], linestyle="-", label=symbol)
+
+    plt.title("Cumulative Profit Over Time by Symbol")
+    plt.xlabel("Date")
+    plt.ylabel("Cumulative Profit")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+def plot_balance_over_time(df):
+    # Convert close_date to datetime if not already
+    df["close_date"] = pd.to_datetime(df["close_date"])
+    df["total_balance"] = df["total_balance"].astype(float)
+    df["free_balance"] = df["free_balance"].astype(float)
+
+    plt.figure(figsize=(12, 6))
+
+    # Plot the total_balance as a line
+    plt.plot(df["close_date"], df["total_balance"], marker="o", linestyle="-", color="b", label="Total Balance")
+
+    # Plot the free_balance as bars
+    plt.plot(df["close_date"], df["free_balance"], color="orange", alpha=1, label="Free Balance")
+
+    # Customize the plot
+    plt.title("Balance Over Time")
+    plt.xlabel("Date")
+    plt.ylabel("Balance")
+    plt.legend()
+    plt.grid(True)
+    plt.xticks(rotation=45)  # Rotate x-axis labels for better readability
+
+    plt.tight_layout()  # Adjust layout to avoid clipping
+    plt.show()
+
+
+def plot_cumulative_profit_by_symbol_and_side(df, column: str = "profit"):
+    symbols = df["symbol"].unique()
+    sides = df["side"].unique()
+    sides = ["buy", "sell"]
+
+    fig, axs = plt.subplots(len(symbols), len(sides), figsize=(15, 5 * len(symbols)), sharex=True, sharey=True)
+    fig.suptitle(f"Cumulative {column} Over Time by Symbol and Trade Side")
+
+    for i, symbol in enumerate(symbols):
+        for j, side in enumerate(sides):
+            ax = axs[i, j] if len(symbols) > 1 else axs[j]
+            subset = df[(df["symbol"] == symbol) & (df["side"] == side)].sort_values(by="close_date")
+            if subset.empty:
+                continue
+            subset["cumulative_profit"] = subset[column].cumsum()
+            ax.plot(subset["close_date"], subset["cumulative_profit"], marker="o", linestyle="-")
+
+            # Calculate success percentage
+            success_rate = (subset[column] > 0).mean() * 100
+
+            ax.set_title(f"{symbol} ({side})\nSuccess Rate: {success_rate:.2f}%")
+            ax.set_xlabel("Date")
+            ax.set_ylabel(f"Cumulative {column}")
+            ax.grid(True)
+            ax.axhline(0, color="black", linewidth=0.5)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
+
+
+def plot_entry_exit_prices(df):
+    symbols = df["symbol"].unique()
+    sides = df["side"].unique()
+
+    fig, axs = plt.subplots(len(symbols), len(sides), figsize=(15, 5 * len(symbols)))
+    fig.suptitle("Entry vs Exit Prices by Symbol and Trade Side")
+
+    for i, symbol in enumerate(symbols):
+        for j, side in enumerate(sides):
+            ax = axs[i, j] if len(symbols) > 1 else axs[j]
+            subset = df[(df["symbol"] == symbol) & (df["side"] == side)]
+            if subset.empty:
+                continue
+            entry_prices = subset["entry_price"]
+            exit_prices = subset["exit_price"]
+
+            ax.scatter(entry_prices, exit_prices, c="b", alpha=0.5)
+            max_price = max(entry_prices.max(), exit_prices.max())
+            min_price = min(entry_prices.min(), exit_prices.min())
+            ax.plot([min_price, max_price], [min_price, max_price], "r--")
+
+            ax.set_title(f"{symbol} ({side})")
+            ax.set_xlabel("Entry Price")
+            ax.set_ylabel("Exit Price")
+            ax.grid(True)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
