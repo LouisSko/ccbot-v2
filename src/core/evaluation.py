@@ -3,8 +3,9 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, Literal, Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel
@@ -227,15 +228,6 @@ def adapted_f1_score(y_true: np.ndarray, y_pred: np.ndarray):
     return f1_score
 
 
-"""Module for storing plotting functions for visualizing trades."""
-
-from typing import Literal
-
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-
-
 def plot_cumulative_profit(df, col: Literal["profit_percent", "profit"] = "profit"):
     """Plots the cumulative profit and net profit over time.
 
@@ -255,8 +247,10 @@ def plot_cumulative_profit(df, col: Literal["profit_percent", "profit"] = "profi
 
     # Plotting
     plt.figure(figsize=(12, 6))
-    plt.plot(df["close_date"], df["cumulative_profit"], linestyle="-", label="Cumulative Profit")#, marker="o")
-    plt.plot(df["close_date"], df["cumulative_net_profit"], linestyle="-", label="Cumulative Net Profit")#, marker="o")
+    plt.plot(df["close_date"], df["cumulative_profit"], linestyle="-", label="Cumulative Profit")  # , marker="o")
+    plt.plot(
+        df["close_date"], df["cumulative_net_profit"], linestyle="-", label="Cumulative Net Profit"
+    )  # , marker="o")
 
     plt.title("Cumulative Profit Over Time")
     plt.xlabel("Date")
