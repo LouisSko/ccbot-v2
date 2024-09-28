@@ -204,9 +204,26 @@ class TargetUpDownNo(TargetGenerator):
         for symbol, df in data.data.items():
 
             ret: pd.Series = (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
+
+            # currently we do this before splitting into train and test set. this is not 100% correct
+            # Calculate quantiles
+            # q_low = ret.quantile(0.25)  # Lower 25% quantile as the threshold for down
+            # q_high = ret.quantile(0.75)  # Upper 25% quantile as the threshold for up
+
+            # # Define a function to avoid using cell variables in the lambda
+            # def label_target(x, q_low=q_low, q_high=q_high):
+            #     if x > q_high:
+            #         return 1
+            #     if x < q_low:
+            #         return -1
+            #     return 0
+
+            # target = ret.apply(label_target)
+
             target = ret.apply(
                 lambda x: 1 if x > self.config.target_value else -1 if x < -self.config.target_value else 0
             )
+
             target.name = "target"
             target_series[symbol] = target.dropna()
 
@@ -215,9 +232,9 @@ class TargetUpDownNo(TargetGenerator):
         return Data(object_ref=self.config.object_id, data=target_series)
 
 
-# TODO: this would only work for a long only scenario since we only predict 1 or 0
-class TargetUpDown(TargetGenerator):
-    """preprocessor for classification predicting"""
+# TODO: this would only work for a long only scenario since we only predict 2 or 0
+class TargetVolatiliy(TargetGenerator):
+    """preprocessor for classification predicting. Only predicts if an action should happen or not."""
 
     def __init__(self, config: TargetSettings):
         self.config = config
@@ -233,7 +250,7 @@ class TargetUpDown(TargetGenerator):
         for symbol, df in data.data.items():
 
             ret: pd.Series = (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
-            target = ret.apply(lambda x: 1 if abs(x) > self.config.target_value else 0)
+            target = ret.apply(lambda x: 2 if abs(x) > self.config.target_value else 0)
             target.name = "target"
             target_series[symbol] = target.dropna()
 
@@ -397,27 +414,207 @@ def ta_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
         df[f"atr_ratio_{period}"] = atr / df["close"]
 
-        # calcualte volume_price_trend
-        volume_price_trend = ta.volume.volume_price_trend(df["close"], df["volume"], fillna=False, smoothing_factor=2)
-        df["volume_price_trend_ratio"] = volume_price_trend / df["close"]
+    # calcualte volume_price_trend
+    volume_price_trend = ta.volume.volume_price_trend(df["close"], df["volume"], fillna=False, smoothing_factor=2)
+    df["volume_price_trend_ratio"] = volume_price_trend / df["close"]
 
-        # calculate vwap
-        vwap = ta.volume.volume_weighted_average_price(
-            high=df["high"], low=df["low"], close=df["close"], volume=df["volume"], window=28
-        )
-        ma = df["close"].rolling(window=28).mean()
-        df["vwap_ratio"] = vwap / ma
+    # calculate vwap
+    vwap = ta.volume.volume_weighted_average_price(
+        high=df["high"], low=df["low"], close=df["close"], volume=df["volume"], window=28
+    )
+    ma = df["close"].rolling(window=28).mean()
+    df["vwap_ratio"] = vwap / ma
 
-        # psar trend
-        psar = ta.trend.PSARIndicator(high=df["high"], low=df["low"], close=df["close"], step=0.02)
-        df["psar_up"] = psar.psar_up() > 0
-        df["psar_down"] = psar.psar_down() < 0
+    df["psar.2"] = indicator_psar_up(df, step=0.2, lookback=28)
+    df["psar.02"] = indicator_psar_up(df, step=0.02, lookback=28)
+    df["psar.002"] = indicator_psar_up(df, step=0.002, lookback=28)
+    df["psar.0002"] = indicator_psar_up(df, step=0.0002, lookback=28)
 
-        df["atr"] = ta.volatility.AverageTrueRange(
-            high=df["high"], low=df["low"], close=df["close"], window=14
-        ).average_true_range()
+    df["atr"] = ta.volatility.AverageTrueRange(
+        high=df["high"], low=df["low"], close=df["close"], window=14
+    ).average_true_range()
 
     return df
+
+
+def indicator_psar_up(df: pd.DataFrame, step: float, lookback: int):
+    """Custom psar trend indicator."""
+
+    n = len(df)
+
+    # Initialize the result array with NaN values for the first `lookback` entries
+    psar_up_values = np.full(n, np.nan)  # Use NumPy to create an array of NaN
+
+    # Loop through the rest of the data and calculate PSAR
+    for i in range(lookback, n):
+        df_sub = df.iloc[i - lookback : i]
+
+        indicator = IncrementalPSARIndicator(step)
+
+        for row in df_sub.iterrows():
+            indicator.update(high=row[1]["high"], low=row[1]["low"], close=row[1]["close"], date=row[0])
+
+        # Get the PSAR value and store it in the pre-allocated array
+        psar_up_values[i] = indicator.psar_up()  # Get the last PSAR up value
+
+    # Create a pandas Series with the calculated PSAR values
+    psar_up = pd.Series(psar_up_values, index=df.index, name="psarup")
+
+    psar_up.fillna(0, inplace=True)
+
+    return psar_up / df["close"]
+
+
+class IncrementalPSARIndicator:
+    """Incremental Parabolic Stop and Reverse (Parabolic SAR)
+
+    This class calculates PSAR incrementally, processing new OHLC data one at a time.
+
+    Args:
+        step(float): the Acceleration Factor used to compute the SAR.
+        max_step(float): the maximum value allowed for the Acceleration Factor.
+    """
+
+    def __init__(
+        self,
+        step: float = 0.02,
+        max_step: float = 0.20,
+        timeframe: Optional[pd.Timedelta] = None,
+    ):
+        self._step = step
+        self._max_step = max_step
+
+        # Internal state variables
+        self._initialized = False
+        self._up_trend = True
+        self._acceleration_factor = self._step
+        self._up_trend_high = None
+        self._down_trend_low = None
+        self._psar = None
+        self._last_high = None
+        self._last_low = None
+        self._previous_high = None
+        self._previous_low = None
+        self._psar_up = None
+        self._psar_down = None
+        self._last_date = None
+        self._timeframe = timeframe
+        self._counter: int = 0
+
+    def _initialize_state(
+        self,
+        high: float,
+        low: float,
+        close: float,
+        date: pd.Timestamp,
+    ):
+        """Initialize state on the first OHLC point."""
+        self._up_trend_high = high
+        self._down_trend_low = low
+        self._psar = close
+        self._last_high = high
+        self._last_low = low
+        self._initialized = True
+        self._last_date = date
+
+    def update(self, high: float, low: float, close: float, date: pd.Timestamp):
+        """Incrementally update the PSAR indicator with a new OHLC data point."""
+
+        self._counter += 1
+
+        if not self._initialized:
+            self._initialize_state(high, low, close, date)
+            return
+
+        if self._timeframe:
+            if self._last_date + self._timeframe != date:
+                raise ValueError(f"the last seen date is {self._last_date} but the current date is {date}")
+
+        self._last_date = date
+
+        reversal = False
+
+        # Last PSAR value
+        psar_prev = self._psar
+        self._previous_high = self._last_high
+        self._previous_low = self._last_low
+        self._last_high = high
+        self._last_low = low
+
+        if self._up_trend:
+            # PSAR for uptrend
+            psar_new = psar_prev + self._acceleration_factor * (self._up_trend_high - psar_prev)
+
+            # Check for trend reversal
+            if low < psar_new:
+                reversal = True
+                psar_new = self._up_trend_high
+                self._down_trend_low = low
+                self._acceleration_factor = self._step
+            else:
+                # Update the trend high and acceleration factor
+                if high > self._up_trend_high:
+                    self._up_trend_high = high
+                    self._acceleration_factor = min(self._acceleration_factor + self._step, self._max_step)
+
+                # Ensure PSAR does not exceed the previous two lows
+                if self._previous_low < psar_new:
+                    psar_new = self._previous_low
+                if self._last_low < psar_new:
+                    psar_new = self._last_low
+
+        else:
+            # PSAR for downtrend
+            psar_new = psar_prev - self._acceleration_factor * (psar_prev - self._down_trend_low)
+
+            # Check for trend reversal
+            if high > psar_new:
+                reversal = True
+                psar_new = self._down_trend_low
+                self._up_trend_high = high
+                self._acceleration_factor = self._step
+            else:
+                # Update the trend low and acceleration factor
+                if low < self._down_trend_low:
+                    self._down_trend_low = low
+                    self._acceleration_factor = min(self._acceleration_factor + self._step, self._max_step)
+
+                # Ensure PSAR does not fall below the previous two highs
+                if self._previous_high > psar_new:
+                    psar_new = self._previous_high
+                if self._last_high > psar_new:
+                    psar_new = self._last_high
+
+        # If a reversal happened, toggle the trend
+        self._up_trend = not self._up_trend if reversal else self._up_trend
+
+        if self._up_trend:
+            self._psar_up = psar_new
+            self._psar_down = None
+        else:
+            self._psar_up = None
+            self._psar_down = psar_new
+
+        # Update current PSAR
+        self._psar = psar_new
+
+    def psar(self) -> float:
+        """Return the current PSAR value."""
+        return self._psar
+
+    def is_up_trend(self) -> bool:
+        """Return True if the current trend is up, False if down."""
+
+        # warmup phase of 100 entries. During this time, we don't want to make any trend predictions.
+        return self._up_trend
+
+    def psar_up(self) -> pd.Series:
+        """Return the PSAR uptrend values."""
+        return self._psar_up
+
+    def psar_down(self) -> pd.Series:
+        """Return the PSAR downtrend values."""
+        return self._psar_down
 
 
 def percentage_change(
@@ -682,9 +879,7 @@ def generate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["vol/closelowconvergence"] = df["close"] / df["low"]
     df["vol/closehighconvergence"] = df["close"] / df["high"]
     df["vol/closeopenconvergence"] = df["close"] / df["open"]
-    df["vol/highopenconvergence"] = df["high"] / df["open"]
     df["vol/highlowconvergence"] = df["high"] / df["low"]
-    df["vol/lowopenconvergence"] = df["low"] / df["open"]
 
     return df
 
