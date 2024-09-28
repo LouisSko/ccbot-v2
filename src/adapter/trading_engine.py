@@ -86,125 +86,120 @@ class CCXTFuturesTradingEngine(TradingEngine):
         logger.info(" ".join(log_messages))
         logger.info("Balance: %s", balance)
 
-    def determine_usd_order_size(
+    def determine_batch_order_sizes(
         self,
-        method: Literal["free_balance", "total_balance", "risk_based"],
+        trade_signals: List[TradeSignal],
+        method: Literal["balance", "risk_based"] = "risk_based",
         risk_pct: float = 0.01,
-        stop_loss_pct: Optional[float] = None,
-    ) -> float:
-        """Determine the USD order size based on the selected method.
-
-        Args:
-            method (str): The method to use for determining the order size.
-                          Options: 'free_balance', 'total_balance', 'risk_based'.
-            risk_pct (float): The percentage of the balance to risk (only applicable if method is 'risk_based').
-            stop_loss_pct (float): The percentage difference between the entry price and the stop loss price (only applicable if method is 'risk_based').
-
-        Returns:
-            float: The order size in USD. If no balance is available, returns None.
+    ) -> List[TradeSignal]:
         """
+        Determine the position sizes for all trade signals collectively, considering open positions and total balance.
 
-        balance = self.config.exchange.fetch_balance()["USDT"]
-        logger.info(balance)
-        if balance["free"] <= 0:
-            usd_order_size = 0.0
-
-        if method == "free_balance":
-            # Risk a percentage of the free balance
-            usd_order_size = balance["free"] * risk_pct
-
-        elif method == "total_balance":
-            # Risk a percentage of the total balance
-            usd_order_size = balance["total"] * risk_pct
-            if usd_order_size > balance["free"]:
-                usd_order_size = balance["free"]
-
-        elif method == "risk_based" and stop_loss_pct is not None:
-            # Risk a percentage of the total balance based on stop loss percentage
-            risk_amount = balance["total"] * risk_pct
-            usd_order_size = risk_amount / stop_loss_pct
-            if usd_order_size > balance["free"]:
-                usd_order_size = balance["free"]
-
-        else:
-            logger.error("Invalid method or missing stop_loss_pct for risk-based sizing.")
-            usd_order_size = 0.0
-
-        return usd_order_size
-
-    def determine_order_size(
-        self,
-        trade_signal: TradeSignal,
-        method: Literal["free_balance", "total_balance", "risk_based"] = "risk_based",
-        risk_pct: float = 0.01,
-    ) -> TradeSignal:
-        """Determine the position size based on the selected method and adds it to the trade signal
-
+        NOTE: the current implementation only allows a single trade_signal for each symbol.
+        
         Args:
-            trade_singal (TradeSignal): trade signal for a single symbol.
+            trade_signals (List[TradeSignal]): A list of trade signals for multiple symbols.
             method (str): The method to use for determining the order size. Options: 'free_balance', 'total_balance', 'risk_based'.
             risk_pct (float): The percentage of the balance to risk.
 
         Returns:
-            TradeSignal
+            List[TradeSignal]: Updated trade signals with determined position sizes.
         """
 
-        # Use market or limit price to calculate the entry price
-        entry_price = trade_signal.limit_price or self.config.exchange.fetch_ticker(trade_signal.symbol)["last"]
-        # Calculate stop loss percentage if stop_loss_price is provided
-        if trade_signal.stop_loss_price:
-            if trade_signal.position_side == "buy":
-                stop_loss_pct = abs((entry_price - trade_signal.stop_loss_price) / entry_price)
-            elif trade_signal.position_side == "sell":
-                stop_loss_pct = abs((trade_signal.stop_loss_price - entry_price) / trade_signal.stop_loss_price)
-        else:
-            stop_loss_pct = None
+        def fetch_cached_ticker(symbol: str, ticker_cache: dict) -> float:
+            """Fetches the ticker price, using the cache if available."""
+            if symbol not in ticker_cache:
+                ticker_cache[symbol] = self.config.exchange.fetch_ticker(symbol)["last"]
+            return ticker_cache[symbol]
 
-        # Determine the USD order size based on the chosen method
-        amount_usd = self.determine_usd_order_size(method=method, risk_pct=risk_pct, stop_loss_pct=stop_loss_pct)
+        def calculate_stop_loss_pct(trade_signal: TradeSignal, entry_price: float) -> Optional[float]:
+            """Calculates the stop loss percentage for a given trade signal."""
+            if trade_signal.stop_loss_price:
+                return abs((entry_price - trade_signal.stop_loss_price) / entry_price)
+            return None
 
-        if amount_usd is None:
-            logger.error("Failed to determine USD order size.")
-            trade_signal.order_amount = None
-            return trade_signal
+        def calculate_usd_order_size(
+            balance: dict, method: str, stop_loss_pct: Optional[float], risk_pct: float
+        ) -> float:
+            """Calculates the USD order size based on the chosen method and stop loss percentage."""
+            if method == "balance":
+                return balance["total"] * risk_pct
+            if method == "risk_based" and stop_loss_pct is not None:
+                return (balance["total"] * risk_pct) / stop_loss_pct
+            return 0.0
 
-        # Calculate amount in the base currency (e.g., BTC)
-        amount = amount_usd / entry_price
+        def calculate_scaling_factor():
+            """calculates the scaling factor"""
+            # Cap total allocation at available balance
+            if total_allocated_usd > balance["free"]:
+                scale_factor = balance["free"] / total_allocated_usd
+            else:
+                scale_factor = 1.0
 
-        # Check if the amount is below the minimum order quantity
-        try:
+            return scale_factor
+
+        # Fetch balance and log open positions
+        balance = self.config.exchange.fetch_balance()["USDT"]
+        logger.info("Available balance: %s", balance["free"])
+
+        # Initialize total allocated USD for all signals
+        total_allocated_usd = 0.0
+
+        # Cache for fetched ticker prices
+        ticker_cache = {}
+
+        # Cache for calculated USD order sizes
+        usd_order_sizes = {}
+
+        for trade_signal in trade_signals:
+            entry_price = fetch_cached_ticker(trade_signal.symbol, ticker_cache)
+            stop_loss_pct = calculate_stop_loss_pct(trade_signal, entry_price)
+            usd_order_sizes[trade_signal.symbol] = calculate_usd_order_size(balance, method, stop_loss_pct, risk_pct)
+            total_allocated_usd += usd_order_sizes[trade_signal.symbol]
+
+        scale_factor = calculate_scaling_factor()
+
+        # Second loop to assign the scaled USD order sizes to each trade signal
+        for trade_signal in trade_signals:
+
+            # Adjust the USD order size based on the scale factor
+            usd_order_size = usd_order_sizes[trade_signal.symbol] * scale_factor
+
+            # Calculate the position size in base currency (e.g., BTC)
+            amount = usd_order_size / ticker_cache[trade_signal.symbol]
+
+            # Ensure amount is above minimum order size
             min_amount = self.order_details.get(trade_signal.symbol).get("min_amount")
-        except Exception as e:
-            raise ValueError(f"Minimum amount is not specified {e}") from e
+            if min_amount and amount < min_amount:
+                logger.warning(
+                    "Specified amount (%s) is smaller than the minimum order quantity (%s) for symbol (%s). Skipping.",
+                    amount,
+                    min_amount,
+                    trade_signal.symbol,
+                )
+                trade_signal.order_amount = None
+                continue
 
-        if min_amount and amount < min_amount:
-            logger.warning(
-                "Specified amount (%s) is smaller than the minimum order quantity (%s) for symbol (%s)",
-                amount,
-                min_amount,
-                trade_signal.symbol,
+            # Round to the required precision
+            precision = self.order_details.get(trade_signal.symbol).get("precision")
+            amount = round_down(amount, precision)
+
+            # Set the determined order size in the trade signal
+            trade_signal.order_amount = amount
+            logger.info(
+                "Position size determined for symbol %s: %s (USD: %s)", trade_signal.symbol, amount, usd_order_size
             )
-            trade_signal.order_amount = None
-            return trade_signal
 
-        # Round to the required precision
-        precision = self.order_details.get(trade_signal.symbol).get("precision")
-        amount = round_down(amount, precision)
-        amount_usd_actual = amount * entry_price
-
-        logger.info("Position size determined. Amount: %s. Amount in USD: %s", amount, amount_usd_actual)
-
-        trade_signal.order_amount = amount
-        return trade_signal
+        return trade_signals
 
     def execute_orders(self, trade_signals: List[TradeSignal]):
         """
-        Places trades based on predictions from the model.
+        Places trades based on predictions from the model, after determining the batch order sizes.
 
         Args:
-            trade_signals (List[TradeSignal]): A list of TradeSignal objects,
-                                            each containing trade details for a symbol.
+            trade_signals (List[TradeSignal]): A list of TradeSignal objects, each containing trade details for a symbol.
         """
+
         logger.info("+" * 50)
         logger.info("Trade signals: %s", trade_signals)
 
@@ -216,7 +211,7 @@ class CCXTFuturesTradingEngine(TradingEngine):
             open_orders = self.config.exchange.fetch_open_orders(symbol=trade_signal.symbol)
             if open_orders:
                 self.config.exchange.cancel_all_orders(symbol=trade_signal.symbol)
-            
+
             # Remove symbol from the list of open positions if it exists
             if trade_signal.symbol in self.symbols_with_open_positions:
                 self.symbols_with_open_positions.remove(trade_signal.symbol)
@@ -226,8 +221,14 @@ class CCXTFuturesTradingEngine(TradingEngine):
             hold_side = self._determine_position(symbol=symbol)
             self._close_trade(symbol=symbol, side=hold_side)
 
+        # Determine order sizes for all trade signals in batch
+        trade_signals = self.determine_batch_order_sizes(trade_signals, method="risk_based", risk_pct=0.01)
+
         # Open new trades or reverse existing ones based on predictions
         for trade_signal in trade_signals:
+            if trade_signal.order_amount is None:
+                continue
+
             hold_side = self._determine_position(symbol=trade_signal.symbol)
 
             if trade_signal.position_side == hold_side:
@@ -268,8 +269,6 @@ class CCXTFuturesTradingEngine(TradingEngine):
 
         logger.info(50 * "-")
         logger.info("create new order")
-
-        trade_signal = self.determine_order_size(trade_signal, method="risk_based", risk_pct=0.01)
 
         if trade_signal.order_amount is None:
             logger.info("Amount is None. No order gets placed.")
