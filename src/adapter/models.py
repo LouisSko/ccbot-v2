@@ -1,19 +1,20 @@
 """Concrete implementation of models."""
 
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
 import pandas as pd
-import ta
 from lightgbm import LGBMClassifier
+from scipy.signal import savgol_filter
 from scipy.stats import uniform as sp_uniform
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import make_scorer
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, TimeSeriesSplit
 from tqdm import tqdm
 
+from src.adapter.processors import IncrementalPSARIndicator
 from src.common_packages import create_logger
 from src.core.datasource import Data
 from src.core.evaluation import adapted_f1_score
@@ -226,47 +227,6 @@ class LgbmDartClf(Model):
         x = data.drop(columns=["target", "close", "atr"])
         y = data["target"]
 
-        # Define hyperparameters for RandomizedSearch
-        param_distributions = {
-            "max_depth": np.arange(1, 7),  # Now a continuous range from 1 to 11
-            "learning_rate": 10 ** (np.linspace(-4, -2, 100)),  # Continuous range from 10^-5 to 1
-            "n_estimators": np.arange(10, 600),  # Continuous range from 50 to 1000
-            "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
-            "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
-            "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],  # Continuous range from 0.1 to 1.0
-        }
-
-        # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
-        tscv = TimeSeriesSplit(
-            n_splits=2,
-            test_size=int(len(x) * 0.2),
-            max_train_size=int(len(x) * 0.8),
-        )
-
-        custom_scorer = make_scorer(adapted_f1_score, greater_is_better=True)
-
-        # Initialize RandomizedSearchCV
-        random_search = RandomizedSearchCV(
-            estimator=self.model,
-            param_distributions=param_distributions,
-            n_iter=40,  # Number of parameter settings sampled
-            cv=tscv,
-            scoring=custom_scorer,
-            n_jobs=4,
-            verbose=1,
-            random_state=42,
-        )
-
-        logger.info("Start hyperparameter tuning with RandomizedSearchCV...")
-
-        # Fit the model with hyperparameter tuning
-        random_search.fit(x, y)
-
-        # Set the best model to self.model
-        self.model = random_search.best_estimator_
-
-        logger.info("Best parameters found: %s", random_search.best_params_)
-        logger.info("Best score achieved: %f", random_search.best_score_)
 
         # Retrieve symbols and training period
         symbols = list(training_data.data.keys())
@@ -285,7 +245,48 @@ class LgbmDartClf(Model):
             self.load(full_model_path)
         else:
             # Train the model and perform hyperparameter tuning if necessary
-            self.model.fit(x, y)
+            # Define hyperparameters for RandomizedSearch
+            param_distributions = {
+                "max_depth": np.arange(1, 7),  # Now a continuous range from 1 to 11
+                "learning_rate": 10 ** (np.linspace(-4, -1, 100)),  # Continuous range from 10^-5 to 1
+                "n_estimators": np.arange(10, 600),  # Continuous range from 50 to 1000
+                "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
+                "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
+                "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],  # Continuous range from 0.1 to 1.0
+            }
+
+            # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
+            tscv = TimeSeriesSplit(
+                n_splits=2,
+                test_size=int(len(x) * 0.2),
+                max_train_size=int(len(x) * 0.8),
+            )
+
+            custom_scorer = make_scorer(adapted_f1_score, greater_is_better=True)
+
+            # Initialize RandomizedSearchCV
+            random_search = RandomizedSearchCV(
+                estimator=self.model,
+                param_distributions=param_distributions,
+                n_iter=30,  # Number of parameter settings sampled
+                cv=tscv,
+                scoring=custom_scorer,
+                n_jobs=-1,
+                verbose=1,
+                random_state=42,
+            )
+
+            logger.info("Start hyperparameter tuning with RandomizedSearchCV...")
+
+            # Fit the model with hyperparameter tuning
+            random_search.fit(x, y)
+
+            # Set the best model to self.model
+            self.model = random_search.best_estimator_
+
+            logger.info("Best parameters found: %s", random_search.best_params_)
+            logger.info("Best score achieved: %f", random_search.best_score_)
+            
             logger.info("Model training complete.")
 
         # Return training metadata
@@ -405,48 +406,6 @@ class LgbmGbrtClf(Model):
         x = data.drop(columns=["target", "close", "atr"])
         y = data["target"]
 
-        # Define hyperparameters for RandomizedSearch
-        param_distributions = {
-            "max_depth": np.arange(1, 11),  # Now a continuous range from 1 to 11
-            "learning_rate": 10 ** (np.linspace(-6, 0, 100)),  # Continuous range from 10^-5 to 1
-            "n_estimators": np.arange(50, 1001),  # Continuous range from 50 to 1000
-            "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
-            "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
-            "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],  # Continuous range from 0.1 to 1.0
-        }
-
-        # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
-        tscv = TimeSeriesSplit(
-            n_splits=2,
-            test_size=int(len(x) * 0.2),
-            max_train_size=int(len(x) * 0.8),
-        )
-
-        custom_scorer = make_scorer(adapted_f1_score, greater_is_better=True)
-
-        # Initialize RandomizedSearchCV
-        random_search = RandomizedSearchCV(
-            estimator=self.model,
-            param_distributions=param_distributions,
-            n_iter=40,  # Number of parameter settings sampled
-            cv=tscv,
-            scoring=custom_scorer,
-            n_jobs=4,
-            verbose=1,
-            random_state=42,
-        )
-
-        logger.info("Start hyperparameter tuning with RandomizedSearchCV...")
-
-        # Fit the model with hyperparameter tuning
-        random_search.fit(x, y)
-
-        # Set the best model to self.model
-        self.model = random_search.best_estimator_
-
-        logger.info("Best parameters found: %s", random_search.best_params_)
-        logger.info("Best score achieved: %f", random_search.best_score_)
-
         # Retrieve symbols and training period
         symbols = list(training_data.data.keys())
         train_start_date = x.index.min()
@@ -463,8 +422,48 @@ class LgbmGbrtClf(Model):
             logger.info("Found an existing saved model. Skipping training.")
             self.load(full_model_path)
         else:
-            # Train the model and perform hyperparameter tuning if necessary
-            self.model.fit(x, y)
+            # Define hyperparameters for RandomizedSearch
+            param_distributions = {
+                "max_depth": np.arange(1, 11),  # Now a continuous range from 1 to 11
+                "learning_rate": 10 ** (np.linspace(-6, 0, 100)),  # Continuous range from 10^-5 to 1
+                "n_estimators": np.arange(50, 1001),  # Continuous range from 50 to 1000
+                "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
+                "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
+                "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],  # Continuous range from 0.1 to 1.0
+            }
+
+            # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
+            tscv = TimeSeriesSplit(
+                n_splits=2,
+                test_size=int(len(x) * 0.2),
+                max_train_size=int(len(x) * 0.8),
+            )
+
+            custom_scorer = make_scorer(adapted_f1_score, greater_is_better=True)
+
+            # Initialize RandomizedSearchCV
+            random_search = RandomizedSearchCV(
+                estimator=self.model,
+                param_distributions=param_distributions,
+                n_iter=30,  # Number of parameter settings sampled
+                cv=tscv,
+                scoring=custom_scorer,
+                n_jobs=-1,
+                verbose=1,
+                random_state=42,
+            )
+
+            logger.info("Start hyperparameter tuning with RandomizedSearchCV...")
+
+            # Fit the model with hyperparameter tuning
+            random_search.fit(x, y)
+
+            # Set the best model to self.model
+            self.model = random_search.best_estimator_
+
+            logger.info("Best parameters found: %s", random_search.best_params_)
+            logger.info("Best score achieved: %f", random_search.best_score_)
+            
             logger.info("Model training complete.")
 
         # Return training metadata
@@ -588,40 +587,6 @@ class RfClf(Model):
         x = data.drop(columns=["target", "close", "atr"])
         y = data["target"]
 
-        param_grid = {
-            "n_estimators": [200],
-            "max_depth": [None, 5, 10, 20],
-            "min_samples_split": [2, 5, 10],
-            "min_samples_leaf": [10, 20, 30],
-        }
-
-        tscv = TimeSeriesSplit(
-            n_splits=2,
-            test_size=int(len(x) * 0.3),
-            max_train_size=int(len(x) * 0.7),
-        )
-
-        custom_scorer = make_scorer(adapted_f1_score, greater_is_better=True)
-
-        # Set up GridSearchCV
-        grid_search = GridSearchCV(
-            estimator=self.model,
-            param_grid=param_grid,
-            scoring=custom_scorer,
-            cv=tscv,
-            n_jobs=-1,
-        )
-
-        # Perform grid search and train the model
-        logger.info("Starting hyperparameter tuning with GridSearchCV...")
-        grid_search.fit(x, y)
-
-        # Get the best model and update self.model
-        self.model = grid_search.best_estimator_
-
-        logger.info("Best parameters found: %s", grid_search.best_params_)
-        logger.info("Model training complete with tuned parameters.")
-
         # Retrieve symbols and training period
         symbols = list(training_data.data.keys())
         train_start_date = x.index.min()
@@ -639,7 +604,39 @@ class RfClf(Model):
             self.load(full_model_path)
         else:
             # Train the model and perform hyperparameter tuning if necessary
-            self.model.fit(x, y)
+            param_grid = {
+            "n_estimators": [200],
+            "max_depth": [None, 5, 10],
+            "min_samples_split": [5, 10, 20],
+            "min_samples_leaf": [10, 20, 30],
+            }
+
+            tscv = TimeSeriesSplit(
+                n_splits=2,
+                test_size=int(len(x) * 0.3),
+                max_train_size=int(len(x) * 0.7),
+            )
+
+            custom_scorer = make_scorer(adapted_f1_score, greater_is_better=True)
+
+            # Set up GridSearchCV
+            grid_search = GridSearchCV(
+                estimator=self.model,
+                param_grid=param_grid,
+                scoring=custom_scorer,
+                cv=tscv,
+                n_jobs=-1,
+            )
+
+            # Perform grid search and train the model
+            logger.info("Starting hyperparameter tuning with GridSearchCV...")
+            grid_search.fit(x, y)
+
+            # Get the best model and update self.model
+            self.model = grid_search.best_estimator_
+
+            logger.info("Best parameters found: %s", grid_search.best_params_)
+            logger.info("Model training complete with tuned parameters.")
             logger.info("Model training complete.")
 
         # Return training metadata
@@ -854,68 +851,80 @@ class PSARModel(Model):
 
         return predictions
 
-    def find_best_step(self, df: pd.DataFrame) -> Dict[str, float]:
-        """Find best step for psar indicator."""
+    def calculate_psar(
+        self, df: pd.DataFrame, step: float
+    ) -> Tuple[float, float, List[float], IncrementalPSARIndicator]:
+        """Calculate the cumulative return and Sharpe ratio for a given step."""
 
-        best_sr = -np.inf
-        best_return = -np.inf
-        best_step = -np.inf
+        indicator = IncrementalPSARIndicator(step=step, max_step=0.2, timeframe=self.config.timeframe)
+        return_list = []
+        buy_price = None
+
+        for row in df.iterrows():
+            current_price = row[1]["close"]
+            indicator.update(high=row[1]["high"], low=row[1]["low"], close=row[1]["close"], date=row[0])
+
+            action = indicator.is_up_trend()
+
+            # If in an uptrend, buy or hold
+            if action:
+                if not buy_price:
+                    buy_price = current_price
+            # If not in an uptrend, sell and record the return
+            else:
+                if buy_price:
+                    return_list.append(((current_price - buy_price) / buy_price) - 0.001)  # Assume 0.1% fees
+                    buy_price = None
+
+        if len(return_list) == 0:
+            return -np.inf, -np.inf, [], indicator
+
+        return_array = np.array(return_list)
+        ret = ((1 + return_array).cumprod()[-1] - 1).item()
+        sr = self.calculate_sharpe_ratio(return_array)
+
+        return ret, sr, return_list, indicator
+
+    def find_best_step(self, df: pd.DataFrame) -> Dict[str, float]:
+        """Perform a hyperparameter search to find the best step for the PSAR indicator."""
+
         best_indicator: IncrementalPSARIndicator = None
         best_return_list = None
 
-        df["return"] = (df["close"].shift(-1, freq="4h") - df["close"]) / df["close"]
-        df = df.fillna(0)
+        all_results = []
 
-        for step in tqdm(np.linspace(0.0001, 0.1, 500)):
+        list_steps = 10 ** np.linspace(-6, 0, 1000)
 
+        # Hyperparameter search for the best step
+        for step in tqdm(list_steps):
             step = step.item()
-            indicator = IncrementalPSARIndicator(step=step, max_step=0.2, timeframe=self.config.timeframe)
-            return_list = []
-            buy_price = None
 
-            for row in df.iterrows():
+            # Call the return and Sharpe ratio calculation function
+            ret, sr, _, _ = self.calculate_psar(df, step)
 
-                current_price = row[1]["close"]
-                ret = row[1]["return"] - 0.001 #assume 0.1% fees
-                indicator.update(high=row[1]["high"], low=row[1]["low"], close=row[1]["close"], date=row[0])
+            all_results.append((step, ret, sr))
 
-                action = indicator.is_up_trend()
+        # Assume result["all_returns"] has your data
+        step_values = [t[0] for t in all_results]
+        ret_values = [t[1] for t in all_results]
 
-                # get in a new trade
-                if action:
-                    return_list.append(ret)
+        # Smoothing using Savitzky-Golay filter (from scipy) - fits polynomial to window
+        ret_smoothed_sg = savgol_filter(ret_values, window_length=100, polyorder=2)
 
-                #     if not buy_price:
-                #         buy_price = current_price
-                # # otherwise close the trade
-                # else:
-                #     # get out of trade if action says no trade
-                #     if buy_price:
-                #         return_list.append((current_price - buy_price) / buy_price)
-                #         buy_price = None
+        # Find the maximum of the smoothed data (you can use either smoothed data above)
+        best_step_value = step_values[np.argmax(ret_smoothed_sg)]
 
-            if len(return_list) != 0:
-                return_array = np.array(return_list)
-
-                ret = (1 + return_array).cumprod()[-1]
-                sr = self.calculate_sharpe_ratio(return_array)
-
-                if ret > best_return:
-                    best_sr = sr
-                    best_step = step
-                    best_return = ret
-                    best_indicator = indicator
-                    best_return_list = return_list
+        # calculate it again with the best found step
+        ret, sr, best_return_list, best_indicator = self.calculate_psar(df, best_step_value)
 
         best_result = {
             "instance": best_indicator,
-            "step": best_step,
-            "sharpe_ratio": best_sr,
-            "return": best_return,
+            "step": best_step_value,
+            "sharpe_ratio": sr,
+            "return": ret,
             "number_of_trades": len(best_return_list),
+            "all_results": all_results,
         }
-
-        logger.info("Found best result %s", best_result)
 
         return best_result
 
@@ -939,158 +948,4 @@ class PSARModel(Model):
         # Calculate the Sharpe ratio
         sharpe_ratio = (avg_return - risk_free_rate) / return_std
 
-        return sharpe_ratio
-
-
-class IncrementalPSARIndicator:
-    """Incremental Parabolic Stop and Reverse (Parabolic SAR)
-
-    This class calculates PSAR incrementally, processing new OHLC data one at a time.
-
-    Args:
-        step(float): the Acceleration Factor used to compute the SAR.
-        max_step(float): the maximum value allowed for the Acceleration Factor.
-    """
-
-    def __init__(
-        self,
-        step: float = 0.02,
-        max_step: float = 0.20,
-        timeframe: pd.Timedelta = pd.Timedelta("4h"),
-    ):
-        self._step = step
-        self._max_step = max_step
-
-        # Internal state variables
-        self._initialized = False
-        self._up_trend = True
-        self._acceleration_factor = self._step
-        self._up_trend_high = None
-        self._down_trend_low = None
-        self._psar = None
-        self._last_high = None
-        self._last_low = None
-        self._previous_high = None
-        self._previous_low = None
-        self._psar_up = None
-        self._psar_down = None
-        self._last_date = None
-        self._timeframe = timeframe
-        self._counter: int = 0
-
-    def _initialize_state(
-        self,
-        high: float,
-        low: float,
-        close: float,
-        date: pd.Timestamp,
-    ):
-        """Initialize state on the first OHLC point."""
-        self._up_trend_high = high
-        self._down_trend_low = low
-        self._psar = close
-        self._last_high = high
-        self._last_low = low
-        self._initialized = True
-        self._last_date = date
-
-    def update(self, high: float, low: float, close: float, date: pd.Timestamp):
-        """Incrementally update the PSAR indicator with a new OHLC data point."""
-
-        self._counter += 1
-
-        if not self._initialized:
-            self._initialize_state(high, low, close, date)
-            return
-
-        if self._last_date + self._timeframe != date:
-            raise ValueError(f"the last seen date is {self._last_date} but the current date is {date}")
-
-        self._last_date = date
-
-        reversal = False
-
-        # Last PSAR value
-        psar_prev = self._psar
-        self._previous_high = self._last_high
-        self._previous_low = self._last_low
-        self._last_high = high
-        self._last_low = low
-
-        if self._up_trend:
-            # PSAR for uptrend
-            psar_new = psar_prev + self._acceleration_factor * (self._up_trend_high - psar_prev)
-
-            # Check for trend reversal
-            if low < psar_new:
-                reversal = True
-                psar_new = self._up_trend_high
-                self._down_trend_low = low
-                self._acceleration_factor = self._step
-            else:
-                # Update the trend high and acceleration factor
-                if high > self._up_trend_high:
-                    self._up_trend_high = high
-                    self._acceleration_factor = min(self._acceleration_factor + self._step, self._max_step)
-
-                # Ensure PSAR does not exceed the previous two lows
-                if self._previous_low < psar_new:
-                    psar_new = self._previous_low
-                if self._last_low < psar_new:
-                    psar_new = self._last_low
-
-        else:
-            # PSAR for downtrend
-            psar_new = psar_prev - self._acceleration_factor * (psar_prev - self._down_trend_low)
-
-            # Check for trend reversal
-            if high > psar_new:
-                reversal = True
-                psar_new = self._down_trend_low
-                self._up_trend_high = high
-                self._acceleration_factor = self._step
-            else:
-                # Update the trend low and acceleration factor
-                if low < self._down_trend_low:
-                    self._down_trend_low = low
-                    self._acceleration_factor = min(self._acceleration_factor + self._step, self._max_step)
-
-                # Ensure PSAR does not fall below the previous two highs
-                if self._previous_high > psar_new:
-                    psar_new = self._previous_high
-                if self._last_high > psar_new:
-                    psar_new = self._last_high
-
-        # If a reversal happened, toggle the trend
-        self._up_trend = not self._up_trend if reversal else self._up_trend
-
-        if self._up_trend:
-            self._psar_up = psar_new
-            self._psar_down = None
-        else:
-            self._psar_up = None
-            self._psar_down = psar_new
-
-        # Update current PSAR
-        self._psar = psar_new
-
-    def psar(self) -> float:
-        """Return the current PSAR value."""
-        return self._psar
-
-    def is_up_trend(self) -> bool:
-        """Return True if the current trend is up, False if down."""
-
-        # warmup phase of 100 entries. During this time, we don't want to make any trend predictions.
-        if self._counter < 100:
-            return False
-
-        return self._up_trend
-
-    def psar_up(self) -> pd.Series:
-        """Return the PSAR uptrend values."""
-        return self._psar_up
-
-    def psar_down(self) -> pd.Series:
-        """Return the PSAR downtrend values."""
-        return self._psar_down
+        return sharpe_ratio.item()

@@ -198,11 +198,13 @@ class ExchangeDatasource(Datasource):
 
         if not symbols:
             logger.warning("No symbols provided. Trading settings can't be adjusted.")
-            return {}
+            return Data(object_ref=self.config.object_id, data=data)
+
 
         if not isinstance(symbols, list) or not all(isinstance(symbol, str) for symbol in symbols):
             logger.error("Invalid symbols format. Symbols should be a list of strings.")
-            return {}
+            return Data(object_ref=self.config.object_id, data=data)
+
 
         # Current time in milliseconds
         current_time_in_ms = int(time.time() * 1000)
