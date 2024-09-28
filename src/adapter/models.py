@@ -145,25 +145,25 @@ class LgbmClf(Model):
             # Extract 'close' and 'atr' columns for further processing
             close = df.pop("close").to_list()
             atr = df.pop("atr").to_list()
+            time_stamps = df.index.to_list()
 
             # Generate predictions
             y_pred = self.model.predict(df)
 
-            # Collect timestamps for predictions
-            time = df.index.to_list()
-
-            # Create and store Prediction object
-            predictions.append(
-                Prediction(
-                    object_ref=self.config.object_id,
-                    symbol=symbol,
-                    prediction=list(y_pred),
-                    ground_truth=ground_truth if ground_truth is None else ground_truth.to_list(),
-                    close=close,
-                    atr=atr,
-                    time=time,
+            # Create a Prediction object for each row of the DataFrame
+            for i in range(len(df)):
+                # Create and store each individual Prediction object
+                predictions.append(
+                    Prediction(
+                        object_ref=self.config.object_id,
+                        symbol=symbol,
+                        prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        close=close[i],
+                        atr=atr[i],
+                        time=time_stamps[i],
+                    )
                 )
-            )
 
         return predictions
 
@@ -227,7 +227,6 @@ class LgbmDartClf(Model):
         x = data.drop(columns=["target", "close", "atr"])
         y = data["target"]
 
-
         # Retrieve symbols and training period
         symbols = list(training_data.data.keys())
         train_start_date = x.index.min()
@@ -252,7 +251,7 @@ class LgbmDartClf(Model):
                 "n_estimators": np.arange(10, 600),  # Continuous range from 50 to 1000
                 "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
                 "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
-                "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],  # Continuous range from 0.1 to 1.0
+                "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
             }
 
             # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
@@ -286,7 +285,7 @@ class LgbmDartClf(Model):
 
             logger.info("Best parameters found: %s", random_search.best_params_)
             logger.info("Best score achieved: %f", random_search.best_score_)
-            
+
             logger.info("Model training complete.")
 
         # Return training metadata
@@ -324,25 +323,25 @@ class LgbmDartClf(Model):
             # Extract 'close' and 'atr' columns for further processing
             close = df.pop("close").to_list()
             atr = df.pop("atr").to_list()
+            time_stamps = df.index.to_list()
 
             # Generate predictions
             y_pred = self.model.predict(df)
 
-            # Collect timestamps for predictions
-            time = df.index.to_list()
-
-            # Create and store Prediction object
-            predictions.append(
-                Prediction(
-                    object_ref=self.config.object_id,
-                    symbol=symbol,
-                    prediction=list(y_pred),
-                    ground_truth=ground_truth if ground_truth is None else ground_truth.to_list(),
-                    close=close,
-                    atr=atr,
-                    time=time,
+            # Create a Prediction object for each row of the DataFrame
+            for i in range(len(df)):
+                # Create and store each individual Prediction object
+                predictions.append(
+                    Prediction(
+                        object_ref=self.config.object_id,
+                        symbol=symbol,
+                        prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        close=close[i],
+                        atr=atr[i],
+                        time=time_stamps[i],
+                    )
                 )
-            )
 
         return predictions
 
@@ -429,7 +428,18 @@ class LgbmGbrtClf(Model):
                 "n_estimators": np.arange(50, 1001),  # Continuous range from 50 to 1000
                 "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
                 "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
-                "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],  # Continuous range from 0.1 to 1.0
+                "colsample_bytree": [
+                    0.1,
+                    0.2,
+                    0.3,
+                    0.4,
+                    0.5,
+                    0.6,
+                    0.7,
+                    0.8,
+                    0.9,
+                    1,
+                ],  # Continuous range from 0.1 to 1.0
             }
 
             # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
@@ -463,7 +473,7 @@ class LgbmGbrtClf(Model):
 
             logger.info("Best parameters found: %s", random_search.best_params_)
             logger.info("Best score achieved: %f", random_search.best_score_)
-            
+
             logger.info("Model training complete.")
 
         # Return training metadata
@@ -505,25 +515,25 @@ class LgbmGbrtClf(Model):
             # Extract 'close' and 'atr' columns for further processing
             close = df.pop("close").to_list()
             atr = df.pop("atr").to_list()
+            time_stamps = df.index.to_list()
 
             # Generate predictions
             y_pred = self.model.predict(df)
 
-            # Collect timestamps for predictions
-            time = df.index.to_list()
-
-            # Create and store Prediction object
-            predictions.append(
-                Prediction(
-                    object_ref=self.config.object_id,
-                    symbol=symbol,
-                    prediction=list(y_pred),
-                    ground_truth=ground_truth if ground_truth is None else ground_truth.to_list(),
-                    close=close,
-                    atr=atr,
-                    time=time,
+            # Create a Prediction object for each row of the DataFrame
+            for i in range(len(df)):
+                # Create and store each individual Prediction object
+                predictions.append(
+                    Prediction(
+                        object_ref=self.config.object_id,
+                        symbol=symbol,
+                        prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        close=close[i],
+                        atr=atr[i],
+                        time=time_stamps[i],
+                    )
                 )
-            )
 
         return predictions
 
@@ -605,10 +615,10 @@ class RfClf(Model):
         else:
             # Train the model and perform hyperparameter tuning if necessary
             param_grid = {
-            "n_estimators": [200],
-            "max_depth": [None, 5, 10],
-            "min_samples_split": [5, 10, 20],
-            "min_samples_leaf": [10, 20, 30],
+                "n_estimators": [200],
+                "max_depth": [None, 5, 10],
+                "min_samples_split": [5, 10, 20],
+                "min_samples_leaf": [10, 20, 30],
             }
 
             tscv = TimeSeriesSplit(
@@ -675,27 +685,28 @@ class RfClf(Model):
             else:
                 ground_truth = None
 
+            # Extract 'close' and 'atr' columns for further processing
             close = df.pop("close").to_list()
             atr = df.pop("atr").to_list()
+            time_stamps = df.index.to_list()
 
             # Generate predictions
             y_pred = self.model.predict(df)
 
-            # Collect timestamps for predictions
-            time = df.index.to_list()
-
-            # Create and store Prediction object
-            predictions.append(
-                Prediction(
-                    object_ref=self.config.object_id,
-                    symbol=symbol,
-                    prediction=list(y_pred),
-                    ground_truth=ground_truth if ground_truth is None else ground_truth.to_list(),
-                    close=close,
-                    atr=atr,
-                    time=time,
+            # Create a Prediction object for each row of the DataFrame
+            for i in range(len(df)):
+                # Create and store each individual Prediction object
+                predictions.append(
+                    Prediction(
+                        object_ref=self.config.object_id,
+                        symbol=symbol,
+                        prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        close=close[i],
+                        atr=atr[i],
+                        time=time_stamps[i],
+                    )
                 )
-            )
 
         return predictions
 
@@ -709,9 +720,6 @@ class PSARModel(Model):
         # create model if it does not exist
         if not hasattr(self, "model") or self.model is None:
             self.model = {}
-
-        # TODO: lets create the df the way they are on the left side with close, action
-        self.result_dict = {}
 
     def load(self, model_path: Optional[str] = None) -> None:
         """Load the model from disk."""
@@ -798,9 +806,6 @@ class PSARModel(Model):
             if symbol not in self.config.training_information.symbols:
                 continue
 
-            if symbol not in self.result_dict:
-                self.result_dict[symbol] = []
-
             for row in df.copy().iterrows():
                 # Update the model with high, low, close, and date
                 self.model[symbol]["instance"].update(
@@ -811,43 +816,34 @@ class PSARModel(Model):
                 action = self.model[symbol]["instance"].is_up_trend()
                 y_pred.append(action)
 
-                # Append OHLC and action data to the list
-                self.result_dict[symbol].append(
-                    {
-                        "symbol": symbol,
-                        "date": row[0],
-                        "open": row[1].get("open", None),
-                        "high": row[1]["high"],
-                        "low": row[1]["low"],
-                        "close": row[1]["close"],
-                        "action": action,
-                    }
-                )
-
-            # joblib.dump(self.result_dict, "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-psar-bitget-4h/result_dict.joblib")
-
-            time = list(df.index)
-
             # Extract ground truth if present
             if "target" in df.columns:
                 ground_truth = df.pop("target")
             else:
                 ground_truth = None
 
+            # Extract 'close' and 'atr' columns for further processing
             close = df.pop("close").to_list()
             atr = df.pop("atr").to_list()
+            time_stamps = df.index.to_list()
 
-            predictions.append(
-                Prediction(
-                    object_ref=self.config.object_id,
-                    symbol=symbol,
-                    prediction=y_pred,
-                    ground_truth=ground_truth,
-                    close=close,
-                    atr=atr,
-                    time=time,
+            # Generate predictions
+            y_pred = self.model.predict(df)
+
+            # Create a Prediction object for each row of the DataFrame
+            for i in range(len(df)):
+                # Create and store each individual Prediction object
+                predictions.append(
+                    Prediction(
+                        object_ref=self.config.object_id,
+                        symbol=symbol,
+                        prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        close=close[i],
+                        atr=atr[i],
+                        time=time_stamps[i],
+                    )
                 )
-            )
 
         return predictions
 

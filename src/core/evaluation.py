@@ -57,8 +57,8 @@ def evaluate(predictions: List[Prediction], save_dir: str) -> None:
 
     # Extract predictions and ground truths
     for prediction in predictions:
-        all_targets.extend(prediction.ground_truth)
-        all_preds.extend(prediction.prediction)
+        all_targets.append(prediction.ground_truth)
+        all_preds.append(prediction.prediction)
         ref.append(prediction.object_ref.value)
 
     # Ensure there's only one component ID

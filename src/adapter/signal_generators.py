@@ -33,34 +33,32 @@ class SignalGenerator(TradeSignalGenerator):
 
         for prediction in predictions:
 
-            for time, pred, close, atr in zip(prediction.time, prediction.prediction, prediction.close, prediction.atr):
+            if prediction.prediction == 1:
+                position_side = "buy"
+                limit_price = prediction.close - (prediction.atr * 0.1)
+                # limit_price = close * (1 - 0.001)
 
-                if pred == 1:
-                    position_side = "buy"
-                    limit_price = close - (atr * 0.1)
-                    # limit_price = close * (1 - 0.001)
+            elif prediction.prediction == -1:
+                position_side = "sell"
+                limit_price = prediction.close + (prediction.atr * 0.1)
+                # limit_price = close * (1 + 0.001)
 
-                elif pred == -1:
-                    position_side = "sell"
-                    limit_price = close + (atr * 0.1)
-                    # limit_price = close * (1 + 0.001)
+            else:
+                continue
 
-                else:
-                    continue
+            stop_loss_price, _ = self.calculate_stops(prediction.close, prediction.atr, position_side)
 
-                stop_loss_price, _ = self.calculate_stops(close, atr, position_side)
+            trade_signal = TradeSignal(
+                time=prediction.time,
+                symbol=prediction.symbol,
+                order_type=self.config.order_type,
+                position_side=position_side,
+                limit_price=limit_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=None,
+            )
 
-                trade_signal = TradeSignal(
-                    time=time,
-                    symbol=prediction.symbol,
-                    order_type=self.config.order_type,
-                    position_side=position_side,
-                    limit_price=limit_price,
-                    stop_loss_price=stop_loss_price,
-                    take_profit_price=None,
-                )
-
-                trade_signals.append(trade_signal)
+            trade_signals.append(trade_signal)
 
         return trade_signals
 

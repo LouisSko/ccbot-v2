@@ -56,11 +56,12 @@ class Prediction(BaseModel):
 
     symbol: str
     object_ref: ObjectId  # object id of the model on which the prediction is based
-    time: List[pd.Timestamp]
-    prediction: List[int]  # TODO: might need to change this in the future, because we also want to do regression
-    ground_truth: Optional[List[int]] = None
-    close: Optional[List[float]] = None  # current price
-    atr: Optional[List[float]] = None  # current atr value. Might be used for stop loss/take profit calculation
+    time: pd.Timestamp
+    prediction: int  # TODO: might need to change this in the future, because we also want to do regression. Action (positive or negative): 2; Buy: 1; Do nothing: 0; Sell: -1
+    ground_truth: Optional[int] = None
+    close: Optional[float] = None  # current price
+    atr: Optional[float] = None  # current atr value. Might be used for stop loss/take profit calculation
+    confidence: Optional[float] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

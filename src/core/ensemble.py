@@ -68,44 +68,39 @@ class EnsembleModel(BasePipelineComponent):
         # Group predictions by symbol and timestamp
         predictions_by_symbol = self._group_predictions_by_symbol_and_time(flat_predictions)
 
-        # Extract common values if available
-        common_values = self._get_common_values(flat_predictions)
-
-        # Create ensemble results for each symbol
+        # Create ensemble results for each symbol and timestamp
         ensemble_results = []
         for symbol, predictions_by_time in predictions_by_symbol.items():
-            if self.config.task_type == "classification":
-                ensemble_predictions = self._classification_voting(predictions_by_time)
-            elif self.config.task_type == "regression":
-                ensemble_predictions = self._regression_mean(predictions_by_time)
-            else:
-                raise ValueError(f"Unknown task type: {self.config.task_type}")
+            for timestamp, prediction in predictions_by_time.items():
+                if self.config.task_type == "classification":
+                    ensemble_predictions = self._classification_voting(prediction["predictions"])
+                elif self.config.task_type == "regression":
+                    ensemble_predictions = self._regression_mean(prediction["predictions"])
+                else:
+                    raise ValueError(f"Unknown task type: {self.config.task_type}")
 
-            # Get the ground truth for this symbol if available
-            common_value_for_symbol = common_values.get(symbol)
-
-            # Create a new Prediction object for each symbol
-            ensemble_results.append(
-                Prediction(
-                    symbol=symbol,
-                    object_ref=self.config.object_id,
-                    time=list(predictions_by_time.keys()),  # Using the timestamps from the grouped predictions
-                    prediction=ensemble_predictions,
-                    ground_truth=common_value_for_symbol.get("ground_truth", None),  # Attach ground truth if found
-                    close=common_value_for_symbol.get("close"),
-                    atr=common_value_for_symbol.get("atr"),
+                # Create a new Prediction object for each symbol
+                ensemble_results.append(
+                    Prediction(
+                        symbol=symbol,
+                        object_ref=self.config.object_id,
+                        time=timestamp,  # Using the timestamps from the grouped predictions
+                        prediction=ensemble_predictions,
+                        ground_truth=prediction.get("ground_truth", None),  # Attach ground truth if found
+                        close=prediction.get("close"),
+                        atr=prediction.get("atr"),
+                    )
                 )
-            )
 
         return ensemble_results
 
     def _group_predictions_by_symbol_and_time(
         self, predictions: List[Prediction]
-    ) -> Dict[str, Dict[pd.Timestamp, List[float]]]:
+    ) -> Dict[str, Dict[pd.Timestamp, Dict]]:
         """Group predictions by symbol and timestamp for easier aggregation.
 
         Returns:
-        Dict[str, Dict[pd.Timestamp, List[float]]]: Grouped predictions by symbol and timestamp.
+        Dict[str, Dict[pd.Timestamp, Dict]]: Grouped predictions by symbol and timestamp.
         """
 
         grouped_predictions = {}
@@ -113,40 +108,35 @@ class EnsembleModel(BasePipelineComponent):
         for pred in predictions:
             if pred.symbol not in grouped_predictions:
                 grouped_predictions[pred.symbol] = {}
-            for t, p in zip(pred.time, pred.prediction):
-                if t not in grouped_predictions[pred.symbol]:
-                    grouped_predictions[pred.symbol][t] = []
-                grouped_predictions[pred.symbol][t].append(p)
+                # create entry if it doesn't exist
+                if pred.time not in grouped_predictions[pred.symbol]:
+                    grouped_predictions[pred.symbol][pred.time] = {
+                        "predictions": [],
+                        "ground_truth": None,
+                        "close": None,
+                        "atr": None,
+                    }
+                # add predictions
+                grouped_predictions[pred.symbol][pred.time]["predictions"].append(pred.prediction)
+
+                # add the other variables
+                if pred.object_ref == self.config.ground_truth_object_ref:
+                    # Store the ground truth for the symbol
+                    grouped_predictions[pred.symbol][pred.time].update(
+                        {
+                            "ground_truth": pred.ground_truth,
+                            "close": pred.close,
+                            "atr": pred.atr,
+                        }
+                    )
+
         return grouped_predictions
 
-    def _get_common_values(self, predictions: List[Prediction]) -> Dict[str, List[float]]:
-        """Fetch common_values from predictions based on the specified ground_truth_object_ref.
-
-        Args:
-        predictions (List[Prediction]): The list of predictions.
-
-        Returns:
-        Dict[str, Dict[str, float]]: A dictionary mapping symbols to their ground truth values.
-        """
-
-        common_values = {}
-
-        for pred in predictions:
-            if pred.object_ref == self.config.ground_truth_object_ref:
-                # Store the ground truth for the symbol
-                common_values[pred.symbol] = {
-                    "ground_truth": pred.ground_truth,
-                    "close": pred.close,
-                    "atr": pred.atr,
-                }
-
-        return common_values
-
-    def _classification_voting(self, predictions_by_time: Dict[pd.Timestamp, List[int]]) -> List[int]:
+    def _classification_voting(self, prediction_list: List[int]) -> int:
         """Perform voting for classification tasks.
 
         Args:
-        predictions_by_time (Dict[pd.Timestamp, List[int]]): Predictions grouped by timestamp.
+        predictions_by_time (List[int]]): predictions of all individual models
 
         Returns:
         List[int]: The majority-vote result for each timestamp.
@@ -174,23 +164,23 @@ class EnsembleModel(BasePipelineComponent):
             return 0
 
         if self.config.agreement_type_clf == "voting":
-            return [majority_vote(preds) for preds in predictions_by_time.values()]
+            return majority_vote(prediction_list)
         if self.config.agreement_type_clf == "all":
-            return [check_all_same(preds) for preds in predictions_by_time.values()]
+            return check_all_same(prediction_list)
 
         raise ValueError("specified agreement type is invalid. Choose 'voting' or 'all'.")
 
-    def _regression_mean(self, predictions_by_time: Dict[pd.Timestamp, List[float]]) -> List[float]:
+    def _regression_mean(self, prediction_list: List[float]) -> float:
         """Perform mean averaging for regression tasks.
 
         Args:
-        predictions_by_time (Dict[pd.Timestamp, List[float]]): Predictions grouped by timestamp.
+        prediction_list (List[float]): Predictions grouped by timestamp.
 
         Returns:
         List[float]: The mean value for each timestamp.
         """
 
-        return [np.mean(preds) for preds in predictions_by_time.values()]
+        return np.mean(prediction_list)
 
     def create_configuration(self) -> EnsembleConfiguration:
         """Returns the configuration of the class."""
