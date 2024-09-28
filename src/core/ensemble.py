@@ -21,7 +21,7 @@ class EnsembleSettings(BaseModel):
     object_id: ObjectId
     depends_on: List[ObjectId]
     ground_truth_object_ref: ObjectId  # which ground truth, close and atr to choose from.
-    task_type: Literal["classification", "regression"]
+    prediction_type: Literal["regression", "direction", "volatility"]
     agreement_type_clf: Literal["voting", "all"]
     data_directory: str  # directory where the data is getting saved
 
@@ -67,17 +67,23 @@ class EnsembleModel(BasePipelineComponent):
 
         # Group predictions by symbol and timestamp
         predictions_by_symbol = self._group_predictions_by_symbol_and_time(flat_predictions)
-
+        
+        print(50*"-")
+        print(predictions_by_symbol)
+        print(50*"-")
+        
         # Create ensemble results for each symbol and timestamp
         ensemble_results = []
         for symbol, predictions_by_time in predictions_by_symbol.items():
             for timestamp, prediction in predictions_by_time.items():
-                if self.config.task_type == "classification":
+                if self.config.prediction_type == "direction":
                     ensemble_predictions = self._classification_voting(prediction["predictions"])
-                elif self.config.task_type == "regression":
+                elif self.config.prediction_type == "volatility":
+                    ensemble_predictions = self._classification_voting(prediction["predictions"])
+                elif self.config.prediction_type == "regression":
                     ensemble_predictions = self._regression_mean(prediction["predictions"])
                 else:
-                    raise ValueError(f"Unknown task type: {self.config.task_type}")
+                    raise ValueError(f"Unknown task type: {self.config.prediction_type}")
 
                 # Create a new Prediction object for each symbol
                 ensemble_results.append(
@@ -89,6 +95,7 @@ class EnsembleModel(BasePipelineComponent):
                         ground_truth=prediction.get("ground_truth", None),  # Attach ground truth if found
                         close=prediction.get("close"),
                         atr=prediction.get("atr"),
+                        prediction_type=self.config.prediction_type,
                     )
                 )
 
@@ -99,6 +106,8 @@ class EnsembleModel(BasePipelineComponent):
     ) -> Dict[str, Dict[pd.Timestamp, Dict]]:
         """Group predictions by symbol and timestamp for easier aggregation.
 
+        It also makes sure that the predictions have the correct type.
+
         Returns:
         Dict[str, Dict[pd.Timestamp, Dict]]: Grouped predictions by symbol and timestamp.
         """
@@ -106,29 +115,34 @@ class EnsembleModel(BasePipelineComponent):
         grouped_predictions = {}
 
         for pred in predictions:
+            if pred.prediction_type != self.config.prediction_type:
+                raise ValueError(
+                    f"Prediction_types of individual models and overarching ensemble need to match. Make sure they are aligned. Model: {pred.prediction_type}; Ensemble: {self.config.prediction_type}"
+                )
             if pred.symbol not in grouped_predictions:
                 grouped_predictions[pred.symbol] = {}
-                # create entry if it doesn't exist
-                if pred.time not in grouped_predictions[pred.symbol]:
-                    grouped_predictions[pred.symbol][pred.time] = {
-                        "predictions": [],
-                        "ground_truth": None,
-                        "close": None,
-                        "atr": None,
-                    }
-                # add predictions
-                grouped_predictions[pred.symbol][pred.time]["predictions"].append(pred.prediction)
+                
+            # create entry if it doesn't exist
+            if pred.time not in grouped_predictions[pred.symbol]:
+                grouped_predictions[pred.symbol][pred.time] = {
+                    "predictions": [],
+                    "ground_truth": None,
+                    "close": None,
+                    "atr": None,
+                }
+            # add predictions
+            grouped_predictions[pred.symbol][pred.time]["predictions"].append(pred.prediction)
 
-                # add the other variables
-                if pred.object_ref == self.config.ground_truth_object_ref:
-                    # Store the ground truth for the symbol
-                    grouped_predictions[pred.symbol][pred.time].update(
-                        {
-                            "ground_truth": pred.ground_truth,
-                            "close": pred.close,
-                            "atr": pred.atr,
-                        }
-                    )
+            # add the other variables
+            if pred.object_ref == self.config.ground_truth_object_ref:
+                # Store the ground truth for the symbol
+                grouped_predictions[pred.symbol][pred.time].update(
+                    {
+                        "ground_truth": pred.ground_truth,
+                        "close": pred.close,
+                        "atr": pred.atr,
+                    }
+                )
 
         return grouped_predictions
 

@@ -2,10 +2,10 @@
 
 import os
 from abc import abstractmethod
-from typing import List, Optional, Type, Union
+from typing import List, Literal, Optional, Type, Union
 
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic.config import ConfigDict
 
 from src.common_packages import create_logger
@@ -31,6 +31,7 @@ class ModelSettings(BaseModel):
     depends_on: ObjectId  # ID of the processor this model depends on.
     data_directory: str  # directory where the data is getting saved
     timeframe: Optional[pd.Timedelta] = None
+    prediction_type: Literal["regression", "direction", "volatility"]
     training_information: Optional[TrainingInformation] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -49,21 +50,78 @@ class ModelConfiguration(BaseConfiguration):
 
 
 class Prediction(BaseModel):
-    """Result of the model predictions.
+    """
+    Base class for predictions, holding common information about the model output.
 
-    For each symbol we have a prediction. This can include multiple preds
+    Attributes:
+        symbol (str): The symbol or asset for which the prediction is made.
+        object_ref (ObjectId): The object ID of the model used for the prediction.
+        time (pd.Timestamp): The timestamp of the prediction.
+        close (Optional[float]): The current price of the asset, used for evaluation or display.
+        atr (Optional[float]): The Average True Range (ATR), used for stop loss/take profit calculation.
+        confidence (Optional[float]): Confidence score of the prediction (if applicable).
+        prediction_type (Literal["regression", "direction", "volatility"]): Specifies the type of prediction:
+
+        - **"regression"**:
+          - The prediction is a continuous float value, representing a numerical outcome such as the predicted return.
+        - **"direction"**:
+          - The prediction is an integer value from {-1, 0, 1}, representing the directional action:
+            - -1: Sell
+            - 0: Hold (do nothing)
+            - 1: Buy
+        - **"volatility"**:
+          - The prediction is a binary integer (0 or 1), representing volatility classification:
+            - 0: Low volatility
+            - 1: High volatility
+
+        prediction (Union[int, float]): The prediction value, which depends on the prediction type:
+        - For **regression**, it is a float value.
+        - For **direction**, it is an integer {-1, 0, 1}.
+        - For **volatility**, it is a binary integer {0, 1}.
+
+        ground_truth (Optional[Union[int, float]]): The actual observed value for the prediction type (optional).
+        - For **regression**, it's a float representing the true return.
+        - For **direction**, it's an integer {-1, 0, 1}.
+        - For **volatility**, it's a binary integer {0, 1}.
+
+    Raises:
+        ValueError: If the prediction value does not match the constraints based on the prediction type.
     """
 
     symbol: str
     object_ref: ObjectId  # object id of the model on which the prediction is based
     time: pd.Timestamp
-    prediction: int  # TODO: might need to change this in the future, because we also want to do regression. Action (positive or negative): 2; Buy: 1; Do nothing: 0; Sell: -1
-    ground_truth: Optional[int] = None
     close: Optional[float] = None  # current price
-    atr: Optional[float] = None  # current atr value. Might be used for stop loss/take profit calculation
-    confidence: Optional[float] = None
+    atr: Optional[float] = None  # current ATR value, used for stop loss/take profit
+    confidence: Optional[float] = None  # Optional confidence score
+    prediction_type: Literal["regression", "direction", "volatility"]
+    prediction: Union[int, float]
+    ground_truth: Optional[Union[int, float]] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="after")
+    def check_ground_truth_in_depends_on(cls, values):  # pylint: disable=no-self-argument
+        """Validate the predictions and ground truths based on prediction_type."""
+
+        if values.prediction_type == "regression":
+            if not isinstance(values.prediction, float):
+                raise ValueError("For regression, prediction must be a float.")
+            if values.ground_truth is not None and not isinstance(values.ground_truth, float):
+                raise ValueError("For regression, ground_truth must be a float.")
+
+        elif values.prediction_type == "direction":
+            if values.prediction not in [-1, 0, 1]:
+                raise ValueError("For direction, prediction must be -1, 0, or 1.")
+            if values.ground_truth is not None and values.ground_truth not in [-1, 0, 1]:
+                raise ValueError("For direction, ground_truth must be -1, 0, or 1.")
+
+        elif values.prediction_type == "volatility":
+            if values.prediction not in [0, 1]:
+                raise ValueError("For volatility, prediction must be 0 or 1.")
+            if values.ground_truth is not None and values.ground_truth not in [-1, 0, 1]:
+                raise ValueError("For volatility, ground_truth must be 0 or 1.")
+        return values
 
 
 logger = create_logger(

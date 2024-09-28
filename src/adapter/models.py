@@ -158,10 +158,11 @@ class LgbmClf(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
-                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
                         time=time_stamps[i],
+                        prediction_type=self.config.prediction_type,
                     )
                 )
 
@@ -336,10 +337,11 @@ class LgbmDartClf(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
-                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
                         time=time_stamps[i],
+                        prediction_type=self.config.prediction_type,
                     )
                 )
 
@@ -428,18 +430,7 @@ class LgbmGbrtClf(Model):
                 "n_estimators": np.arange(50, 1001),  # Continuous range from 50 to 1000
                 "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
                 "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
-                "colsample_bytree": [
-                    0.1,
-                    0.2,
-                    0.3,
-                    0.4,
-                    0.5,
-                    0.6,
-                    0.7,
-                    0.8,
-                    0.9,
-                    1,
-                ],  # Continuous range from 0.1 to 1.0
+                "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
             }
 
             # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
@@ -528,10 +519,11 @@ class LgbmGbrtClf(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
-                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
                         time=time_stamps[i],
+                        prediction_type=self.config.prediction_type,
                     )
                 )
 
@@ -701,10 +693,11 @@ class RfClf(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
-                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
                         time=time_stamps[i],
+                        prediction_type=self.config.prediction_type,
                     )
                 )
 
@@ -838,10 +831,11 @@ class PSARModel(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
-                        ground_truth=int(ground_truth[i]) if ground_truth is not None else None,
+                        ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
                         time=time_stamps[i],
+                        prediction_type=self.config.prediction_type,
                     )
                 )
 

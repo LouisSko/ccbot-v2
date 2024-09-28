@@ -250,7 +250,7 @@ class TargetVolatiliy(TargetGenerator):
         for symbol, df in data.data.items():
 
             ret: pd.Series = (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
-            target = ret.apply(lambda x: 2 if abs(x) > self.config.target_value else 0)
+            target = ret.apply(lambda x: 1 if abs(x) > self.config.target_value else 0)
             target.name = "target"
             target_series[symbol] = target.dropna()
 
