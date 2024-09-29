@@ -129,14 +129,11 @@ class FeaturesExchange(FeatureGenerator):
             if not df.empty:
                 data_processed[symbol] = df
 
-            logger.debug(
-                "Processed Symbol: %s. Calculated features: %s, Dataset entries: %s",
-                symbol,
+            logger.info(
+                "Calculation of features finished. Calculated features: %s, Dataset entries: %s",
                 len(df.columns),
                 len(df),
             )
-
-        logger.info("Calculation of features finished.")
 
         return Data(object_ref=self.config.object_id, data=data_processed)
 
@@ -203,7 +200,9 @@ class TargetUpDownNo(TargetGenerator):
         # target is the return
         for symbol, df in data.data.items():
 
-            ret: pd.Series = (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
+            ret: pd.Series = (
+                (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
+            ).dropna()
 
             # currently we do this before splitting into train and test set. this is not 100% correct
             # Calculate quantiles
@@ -225,14 +224,13 @@ class TargetUpDownNo(TargetGenerator):
             )
 
             target.name = "target"
-            target_series[symbol] = target.dropna()
+            target_series[symbol] = target
 
         logger.info("Calculation of target finished.")
 
         return Data(object_ref=self.config.object_id, data=target_series)
 
 
-# TODO: this would only work for a long only scenario since we only predict 2 or 0
 class TargetVolatiliy(TargetGenerator):
     """preprocessor for classification predicting. Only predicts if an action should happen or not."""
 
@@ -249,7 +247,9 @@ class TargetVolatiliy(TargetGenerator):
         # target is the return
         for symbol, df in data.data.items():
 
-            ret: pd.Series = (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
+            ret: pd.Series = (
+                (df["close"].shift(-target_shift, freq=self.config.timeframe) - df["close"]) / df["close"]
+            ).dropna()
             target = ret.apply(lambda x: 1 if abs(x) > self.config.target_value else 0)
             target.name = "target"
             target_series[symbol] = target.dropna()
