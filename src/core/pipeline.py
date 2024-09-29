@@ -4,16 +4,18 @@ import json
 import os
 from abc import ABC
 from importlib import import_module
+from itertools import chain
 from typing import Dict, List, Optional, Type, Union
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from src.core.generator import TradeSignal
 from src.common_packages import CustomJSONEncoder, create_logger, timestamp_decoder
 from src.core.base import BaseConfiguration, BasePipelineComponent
 from src.core.datasource import Data, Datasource
 from src.core.evaluation import evaluate
+from src.core.generator import TradeSignal
+from src.core.processor import TargetGenerator
 from src.core.model import Model, TrainingInformation
 from src.core.splitter import data_splitter
 
@@ -65,15 +67,20 @@ class Pipeline(ABC):
             if component_type == "datasource":
                 result[component_id] = component.scrape_data_current()
             elif component_type == "processor":
-                result[component_id] = component.process(result[component_dependencies])
+                if isinstance(component, TargetGenerator):
+                    result[component_id] = None # do not calculate target
+                else:
+                    result[component_id] = component.process(result[component_dependencies])
             elif component_type == "merger":
-                result[component_id] = component.merge_data([result[dep] for dep in component_dependencies])
+                result[component_id] = component.merge_data([result[dep] for dep in component_dependencies if result[dep] is not None])
             elif component_type == "model":
                 result[component_id] = component.predict(result[component_dependencies])
             elif component_type == "ensemble":
                 result[component_id] = component.ensemble([result[dep] for dep in component_dependencies])
             elif component_type == "generator":
-                trade_signals = component.generate_trade_signals(result[component_dependencies])
+                trade_signals = component.generate_trade_signals(
+                    list(chain.from_iterable([result[dep] for dep in component_dependencies]))
+                )
 
         logger.info("Pipeline execution completed.")
 
