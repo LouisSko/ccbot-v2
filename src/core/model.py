@@ -2,7 +2,7 @@
 
 import os
 from abc import abstractmethod
-from typing import List, Literal, Optional, Type, Union
+from typing import Dict, List, Literal, Optional, Tuple, Type, Union
 
 import pandas as pd
 from pydantic import BaseModel, Field, model_validator
@@ -106,21 +106,21 @@ class Prediction(BaseModel):
 
         if values.prediction_type == "regression":
             if not isinstance(values.prediction, float):
-                raise ValueError("For regression, prediction must be a float.")
+                raise ValueError("For 'prediction_type' 'regression', 'prediction' must be a float.")
             if values.ground_truth is not None and not isinstance(values.ground_truth, float):
-                raise ValueError("For regression, ground_truth must be a float.")
+                raise ValueError("For 'prediction_type' 'regression', 'ground_truth' must be a float.")
 
         elif values.prediction_type == "direction":
             if values.prediction not in [-1, 0, 1]:
-                raise ValueError("For direction, prediction must be -1, 0, or 1.")
+                raise ValueError("For 'prediction_type' 'direction', 'prediction' must be -1, 0, or 1.")
             if values.ground_truth is not None and values.ground_truth not in [-1, 0, 1]:
-                raise ValueError("For direction, ground_truth must be -1, 0, or 1.")
+                raise ValueError("For 'prediction_type' 'direction', 'ground_truth' must be -1, 0, or 1.")
 
         elif values.prediction_type == "volatility":
             if values.prediction not in [0, 1]:
-                raise ValueError("For volatility, prediction must be 0 or 1.")
+                raise ValueError("For 'prediction_type' 'volatility', 'prediction' must be 0 or 1.")
             if values.ground_truth is not None and values.ground_truth not in [-1, 0, 1]:
-                raise ValueError("For volatility, ground_truth must be 0 or 1.")
+                raise ValueError("For 'prediction_type' 'volatility', 'ground_truth' must be 0 or 1.")
         return values
 
 

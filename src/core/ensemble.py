@@ -67,11 +67,6 @@ class EnsembleModel(BasePipelineComponent):
 
         # Group predictions by symbol and timestamp
         predictions_by_symbol = self._group_predictions_by_symbol_and_time(flat_predictions)
-        
-        print(50*"-")
-        print(predictions_by_symbol)
-        print(50*"-")
-        
         # Create ensemble results for each symbol and timestamp
         ensemble_results = []
         for symbol, predictions_by_time in predictions_by_symbol.items():
@@ -121,7 +116,6 @@ class EnsembleModel(BasePipelineComponent):
                 )
             if pred.symbol not in grouped_predictions:
                 grouped_predictions[pred.symbol] = {}
-                
             # create entry if it doesn't exist
             if pred.time not in grouped_predictions[pred.symbol]:
                 grouped_predictions[pred.symbol][pred.time] = {

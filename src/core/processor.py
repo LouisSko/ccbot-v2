@@ -2,7 +2,7 @@
 
 import os
 from abc import abstractmethod
-from typing import List, Type, Union
+from typing import List, Union, Type
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -74,7 +74,7 @@ class TargetGenerator(BasePipelineComponent):
         pass
 
     def process(self, data: Data) -> Data:
-        """Allows the instance to be called as a function."""
+        """Processes the data."""
 
         return self.create_target(data)
 
