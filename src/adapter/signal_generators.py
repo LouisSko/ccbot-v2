@@ -1,7 +1,9 @@
 """Adapter for trade signal generator."""
 
 import os
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
 
 from src.common_packages import create_logger
 from src.core.generator import GeneratorSettings, TradeSignal, TradeSignalGenerator
@@ -26,31 +28,63 @@ class SignalGenerator(TradeSignalGenerator):
         self.percent_take_profit = 0.01
         self.exit_type = "atr"
 
-    def generate_trade_signals(self, predictions: List[Prediction]) -> List[TradeSignal]:
-        """generate trade signals based on predictions."""
+    def extract_pred_types(self, predictions: List[Prediction]) -> Tuple[
+        Dict[Tuple[str, pd.Timestamp], Prediction],
+        Dict[Tuple[str, pd.Timestamp], Prediction],
+        Dict[Tuple[str, pd.Timestamp], Prediction],
+    ]:
+        """extract different prediction types."""
+
+        prediction_dir, prediction_vola, prediction_reg = {}, {}, {}
+        for prediction in predictions:
+            if prediction.prediction_type == "direction":
+                prediction_dir[(prediction.symbol, prediction.time)] = prediction
+            elif prediction.prediction_type == "volatility":
+                prediction_vola[(prediction.symbol, prediction.time)] = prediction
+            elif prediction.prediction_type == "regression":
+                prediction_reg[(prediction.symbol, prediction.time)] = prediction
+
+        return prediction_dir, prediction_vola, prediction_reg
+
+    # or i separate the trades myself
+    def generate_trade_signals(
+        self,
+        predictions: List[Prediction],
+    ) -> List[TradeSignal]:
+        """generate trade signals based on direction predictions and volatility predictions.
+
+        The directional predictions are needed, the vola predictions are optional and can be used for additional confirmation.
+        """
 
         trade_signals = []
 
-        for prediction in predictions:
+        # filter preds. Currently we do not make use of regression predictions
+        dir_preds, vola_preds, reg_preds = self.extract_pred_types(predictions)
 
-            if prediction.prediction == 1:
+        for key, pred in dir_preds.items():
+            
+            # if vola prediction is 0 (low), don't trade
+            if vola_preds and vola_preds[key].prediction == 0:
+                continue
+
+            if pred.prediction == 1:
                 position_side = "buy"
-                limit_price = prediction.close - (prediction.atr * 0.1)
+                limit_price = pred.close - (pred.atr * 0.1)
                 # limit_price = close * (1 - 0.001)
 
-            elif prediction.prediction == -1:
+            elif pred.prediction == -1:
                 position_side = "sell"
-                limit_price = prediction.close + (prediction.atr * 0.1)
+                limit_price = pred.close + (pred.atr * 0.1)
                 # limit_price = close * (1 + 0.001)
 
             else:
                 continue
 
-            stop_loss_price, _ = self.calculate_stops(prediction.close, prediction.atr, position_side)
+            stop_loss_price, _ = self.calculate_stops(pred.close, pred.atr, position_side)
 
             trade_signal = TradeSignal(
-                time=prediction.time,
-                symbol=prediction.symbol,
+                time=pred.time,
+                symbol=pred.symbol,
                 order_type=self.config.order_type,
                 position_side=position_side,
                 limit_price=limit_price,
