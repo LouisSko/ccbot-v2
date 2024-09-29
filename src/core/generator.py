@@ -65,7 +65,7 @@ class GeneratorSettings(BaseModel):
     """Parameters for initializing the generator."""
 
     object_id: ObjectId
-    depends_on: ObjectId  # ID of the processor this model depends on.
+    depends_on: List[ObjectId]  # ID of the processor this model depends on.
     order_type: Literal["limit", "market"]
 
 
