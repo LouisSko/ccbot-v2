@@ -15,8 +15,8 @@ from src.core.base import BaseConfiguration, BasePipelineComponent
 from src.core.datasource import Data, Datasource
 from src.core.evaluation import evaluate
 from src.core.generator import TradeSignal
-from src.core.processor import TargetGenerator
 from src.core.model import Model, TrainingInformation
+from src.core.processor import TargetGenerator
 from src.core.splitter import data_splitter
 
 logger = create_logger(
@@ -68,11 +68,13 @@ class Pipeline(ABC):
                 result[component_id] = component.scrape_data_current()
             elif component_type == "processor":
                 if isinstance(component, TargetGenerator):
-                    result[component_id] = None # do not calculate target
+                    result[component_id] = None  # do not calculate target
                 else:
                     result[component_id] = component.process(result[component_dependencies])
             elif component_type == "merger":
-                result[component_id] = component.merge_data([result[dep] for dep in component_dependencies if result[dep] is not None])
+                result[component_id] = component.merge_data(
+                    [result[dep] for dep in component_dependencies if result[dep] is not None]
+                )
             elif component_type == "model":
                 result[component_id] = component.predict(result[component_dependencies])
             elif component_type == "ensemble":
@@ -115,21 +117,35 @@ class Pipeline(ABC):
             elif component_type == "merger":
                 result[component_id] = component.merge_data([result[dep] for dep in component_dependencies])
             elif component_type == "model":
+                result[component_id] = {"train": None, "test": None}
+
                 if train_test_split_date:
                     data_train, data_test = data_splitter(
-                        data=result[component_dependencies], split_date=train_test_split_date
+                        data=result[component_dependencies],
+                        split_date=train_test_split_date,
                     )
                     component.train(data_train)
-                    result[component_id] = component.predict(data_test)
-                    evaluate(result[component_id], save_dir=component.config.data_directory)
+                    result[component_id]["train"] = component.predict(data_train)
+                    evaluate(result[component_id]["train"], save_dir=component.config.data_directory, prefix="train")
+                    result[component_id]["test"] = component.predict(data_test)
+                    evaluate(result[component_id]["test"], save_dir=component.config.data_directory, prefix="test")
                 else:
                     component.train(result[component_dependencies])
+                    result[component_id]["train"] = component.predict(result[component_dependencies])
                 component.save()
             elif component_type == "ensemble":
+                result[component_id] = {"train": None, "test": None}
                 if train_test_split_date:
                     # combine predictions from different models
-                    result[component_id] = component.ensemble([result[dep] for dep in component_dependencies])
-                    evaluate(result[component_id], save_dir=component.config.data_directory)
+                    result[component_id]["test"] = component.ensemble(
+                        [result[dep]["test"] for dep in component_dependencies]
+                    )
+                    evaluate(result[component_id]["test"], save_dir=component.config.data_directory, prefix="test")
+
+                result[component_id]["train"] = component.ensemble(
+                    [result[dep]["train"] for dep in component_dependencies]
+                )
+                evaluate(result[component_id]["train"], save_dir=component.config.data_directory, prefix="train")
 
         self.last_training_date = self.get_last_training_date()
 

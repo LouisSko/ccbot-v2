@@ -36,7 +36,7 @@ class ClassificationMetrics(BaseModel):
     absolute_true: Dict[int, int]
 
 
-def evaluate(predictions: List[Prediction], save_dir: str) -> None:
+def evaluate(predictions: List[Prediction], save_dir: str, prefix: str) -> None:
     """
     Evaluates model predictions against ground truth, calculates metrics,
     and stores the results in the specified directory.
@@ -44,7 +44,7 @@ def evaluate(predictions: List[Prediction], save_dir: str) -> None:
     Args:
         predictions (List[Prediction]): A list of Prediction objects containing ground truth, predicted values, and object reference.
         save_dir (str): The directory where evaluation results will be stored.
-
+        prefix (str): Added as a prefix to the filename
     Raises:
         ValueError: If more than one unique component ID is present in the predictions.
     """
@@ -54,12 +54,17 @@ def evaluate(predictions: List[Prediction], save_dir: str) -> None:
     all_preds = []
     all_targets = []
     ref = []
-
+    pred_dates = []
     # Extract predictions and ground truths
     for prediction in predictions:
         all_targets.append(prediction.ground_truth)
         all_preds.append(prediction.prediction)
         ref.append(prediction.object_ref.value)
+        pred_dates.append(prediction.time)
+
+    # find first and last date
+    start_date = min(pred_dates)
+    end_date = max(pred_dates)
 
     # Ensure there's only one component ID
     unique_refs = set(ref)
@@ -73,13 +78,13 @@ def evaluate(predictions: List[Prediction], save_dir: str) -> None:
     metrics = calculate_classification_metrics(np.array(all_targets), np.array(all_preds))
 
     # Create the directory for storing metrics if it doesn't exist
-    metrics_dir = Path(save_dir) / "metrics"
-    metrics_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir = os.path.join(save_dir, "metrics", component_id)
+    os.makedirs(metrics_dir, exist_ok=True)
 
     # Save the metrics to a file
-    file_path = metrics_dir / f"{component_id}.json"
+    file_path = os.path.join(metrics_dir, f"{prefix}_{start_date.isoformat()}_{end_date.isoformat()}.json")
     try:
-        with file_path.open("w", encoding="utf8") as file:
+        with open(file_path, "w", encoding="utf8") as file:
             json.dump(metrics.model_dump(), file, indent=4)
         logger.info("Evaluation results saved to %s", file_path)
     except Exception as e:
