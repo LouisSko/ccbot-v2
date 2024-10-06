@@ -21,8 +21,22 @@ def data_splitter(data: Data, split_date: pd.Timestamp) -> Tuple[Data, Data]:
     """
 
     data_train, data_test = {}, {}
+    
+    data_cleaned = {}
 
+    # limit the amount of past data to a certain timehorizon
+    first_train_date = split_date - pd.Timedelta(weeks=208)
+
+    # Filter out data with too few entries (e.g. less than 300 rows)
     for key, df in data.data.items():
+        if len(df) > 50:
+            # Limit the data to only entries from the last 1 year before split_date
+            data_cleaned[key] =  df[(df.index >= first_train_date)]
+
+    # limit data to 1 year backwards period
+
+    # split data into train and test
+    for key, df in data_cleaned.items():
         data_train[key] = df[df.index <= split_date].copy()
         data_test[key] = df[df.index > split_date].copy()
 
