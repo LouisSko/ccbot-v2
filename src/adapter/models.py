@@ -148,7 +148,9 @@ class LgbmClf(Model):
             time_stamps = df.index.to_list()
 
             # Generate predictions
-            y_pred = self.model.predict(df)
+            y_pred_prob = self.model.predict_proba(df)
+            predicted_indices = y_pred_prob.argmax(axis=1)
+            y_pred = self.model.classes_[predicted_indices]
 
             # Create a Prediction object for each row of the DataFrame
             for i in range(len(df)):
@@ -157,7 +159,8 @@ class LgbmClf(Model):
                     Prediction(
                         object_ref=self.config.object_id,
                         symbol=symbol,
-                        prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        prediction=y_pred[i],  # Ensure prediction is an integer
+                        confidence=dict(zip(self.model.classes_, y_pred_prob[i])),
                         ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
@@ -283,6 +286,7 @@ class LgbmDartClf(Model):
 
             # Set the best model to self.model
             self.model = random_search.best_estimator_
+            # self.model.fit(x, y)
 
             logger.info("Best parameters found: %s", random_search.best_params_)
             logger.info("Best score achieved: %f", random_search.best_score_)
@@ -298,8 +302,7 @@ class LgbmDartClf(Model):
         )
 
     def _predict(self, prediction_data: Data) -> List[Prediction]:
-        """
-        Generates predictions based on input data using the trained model.
+        """Generates predictions based on input data using the trained model.
 
         Args:
             prediction_data (Data): A Data object containing symbol-specific
@@ -309,25 +312,40 @@ class LgbmDartClf(Model):
             List[Prediction]: A list of Prediction objects containing predictions
                             and associated metadata for each symbol.
         """
+
         predictions = []
 
         for symbol, df in prediction_data.data.items():
 
+            # skip symbol if it was not part of the training symbols
+            if symbol not in self.config.training_information.symbols:
+                continue
+
+            if df.empty:
+                continue
+
             df = df.copy()
 
-            # Extract ground truth if present
-            if "target" in df.columns:
-                ground_truth = df.pop("target")
-            else:
-                ground_truth = None
+            try:
+                # Extract ground truth if present
+                if "target" in df.columns:
+                    ground_truth = df.pop("target")
+                else:
+                    ground_truth = None
 
-            # Extract 'close' and 'atr' columns for further processing
-            close = df.pop("close").to_list()
-            atr = df.pop("atr").to_list()
-            time_stamps = df.index.to_list()
+                # Extract 'close' and 'atr' columns for further processing
+                close = df.pop("close").to_list()
+                atr = df.pop("atr").to_list()
+                time_stamps = df.index.to_list()
 
-            # Generate predictions
-            y_pred = self.model.predict(df)
+                # Generate predictions
+                y_pred_prob = self.model.predict_proba(df)
+                predicted_indices = y_pred_prob.argmax(axis=1)
+                y_pred = self.model.classes_[predicted_indices]
+
+            except Exception as e:
+                logger.info(df)
+                raise ValueError(f"Error for symbol: {symbol}. len df: {len(df)}") from e
 
             # Create a Prediction object for each row of the DataFrame
             for i in range(len(df)):
@@ -337,6 +355,7 @@ class LgbmDartClf(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        confidence=dict(zip(self.model.classes_, y_pred_prob[i])),
                         ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
@@ -425,9 +444,9 @@ class LgbmGbrtClf(Model):
         else:
             # Define hyperparameters for RandomizedSearch
             param_distributions = {
-                "max_depth": np.arange(1, 11),  # Now a continuous range from 1 to 11
-                "learning_rate": 10 ** (np.linspace(-6, 0, 100)),  # Continuous range from 10^-5 to 1
-                "n_estimators": np.arange(50, 1001),  # Continuous range from 50 to 1000
+                "max_depth": np.arange(1, 10),
+                "learning_rate": 10 ** (np.linspace(-5, -1, 100)),
+                "n_estimators": np.arange(50, 1000),
                 "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
                 "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
                 "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
@@ -461,6 +480,7 @@ class LgbmGbrtClf(Model):
 
             # Set the best model to self.model
             self.model = random_search.best_estimator_
+            # self.model.fit(x, y)
 
             logger.info("Best parameters found: %s", random_search.best_params_)
             logger.info("Best score achieved: %f", random_search.best_score_)
@@ -476,8 +496,7 @@ class LgbmGbrtClf(Model):
         )
 
     def _predict(self, prediction_data: Data) -> List[Prediction]:
-        """
-        Generates predictions based on input data using the trained model.
+        """Generates predictions based on input data using the trained model.
 
         Args:
             prediction_data (Data): A Data object containing symbol-specific
@@ -487,6 +506,7 @@ class LgbmGbrtClf(Model):
             List[Prediction]: A list of Prediction objects containing predictions
                             and associated metadata for each symbol.
         """
+
         predictions = []
 
         for symbol, df in prediction_data.data.items():
@@ -495,21 +515,31 @@ class LgbmGbrtClf(Model):
             if symbol not in self.config.training_information.symbols:
                 continue
 
+            if df.empty:
+                continue
+
             df = df.copy()
 
-            # Extract ground truth if present
-            if "target" in df.columns:
-                ground_truth = df.pop("target")
-            else:
-                ground_truth = None
+            try:
+                # Extract ground truth if present
+                if "target" in df.columns:
+                    ground_truth = df.pop("target")
+                else:
+                    ground_truth = None
 
-            # Extract 'close' and 'atr' columns for further processing
-            close = df.pop("close").to_list()
-            atr = df.pop("atr").to_list()
-            time_stamps = df.index.to_list()
+                # Extract 'close' and 'atr' columns for further processing
+                close = df.pop("close").to_list()
+                atr = df.pop("atr").to_list()
+                time_stamps = df.index.to_list()
 
-            # Generate predictions
-            y_pred = self.model.predict(df)
+                # Generate predictions
+                y_pred_prob = self.model.predict_proba(df)
+                predicted_indices = y_pred_prob.argmax(axis=1)
+                y_pred = self.model.classes_[predicted_indices]
+
+            except Exception as e:
+                logger.info(df)
+                raise ValueError(f"Error for symbol: {symbol}. len df: {len(df)}") from e
 
             # Create a Prediction object for each row of the DataFrame
             for i in range(len(df)):
@@ -519,6 +549,7 @@ class LgbmGbrtClf(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        confidence=dict(zip(self.model.classes_, y_pred_prob[i])),
                         ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
@@ -607,9 +638,9 @@ class RfClf(Model):
         else:
             # Train the model and perform hyperparameter tuning if necessary
             param_grid = {
-                "n_estimators": [200],
+                "n_estimators": [100],
                 "max_depth": [None, 5, 10],
-                "min_samples_split": [5, 10, 20],
+                "min_samples_split": [2, 10, 20],
                 "min_samples_leaf": [10, 20, 30],
             }
 
@@ -636,7 +667,7 @@ class RfClf(Model):
 
             # Get the best model and update self.model
             self.model = grid_search.best_estimator_
-
+            # self.model.fit(x, y)
             logger.info("Best parameters found: %s", grid_search.best_params_)
             logger.info("Model training complete with tuned parameters.")
             logger.info("Model training complete.")
@@ -669,21 +700,31 @@ class RfClf(Model):
             if symbol not in self.config.training_information.symbols:
                 continue
 
+            if df.empty:
+                continue
+
             df = df.copy()
 
-            # Extract ground truth if present
-            if "target" in df.columns:
-                ground_truth = df.pop("target")
-            else:
-                ground_truth = None
+            try:
+                # Extract ground truth if present
+                if "target" in df.columns:
+                    ground_truth = df.pop("target")
+                else:
+                    ground_truth = None
 
-            # Extract 'close' and 'atr' columns for further processing
-            close = df.pop("close").to_list()
-            atr = df.pop("atr").to_list()
-            time_stamps = df.index.to_list()
+                # Extract 'close' and 'atr' columns for further processing
+                close = df.pop("close").to_list()
+                atr = df.pop("atr").to_list()
+                time_stamps = df.index.to_list()
 
-            # Generate predictions
-            y_pred = self.model.predict(df)
+                # Generate predictions
+                y_pred_prob = self.model.predict_proba(df)
+                predicted_indices = y_pred_prob.argmax(axis=1)
+                y_pred = self.model.classes_[predicted_indices]
+
+            except Exception as e:
+                logger.info(df)
+                raise ValueError(f"Error for symbol: {symbol}. len df: {len(df)}") from e
 
             # Create a Prediction object for each row of the DataFrame
             for i in range(len(df)):
@@ -693,6 +734,7 @@ class RfClf(Model):
                         object_ref=self.config.object_id,
                         symbol=symbol,
                         prediction=int(y_pred[i]),  # Ensure prediction is an integer
+                        confidence=dict(zip(self.model.classes_, y_pred_prob[i])),
                         ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
                         close=close[i],
                         atr=atr[i],
