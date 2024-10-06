@@ -87,7 +87,10 @@ class ExchangeDatasource(Datasource):
         all_symbols = [symbol for symbol in tickers if symbol.endswith("USDT")]
 
         # fetch the data for all symbols and select the n best coins with the highest volume
-        result = self._fetch_ohlcv(symbols=all_symbols, limit=7, timeframe=pd.Timedelta("1d"))
+        result = self._fetch_ohlcv(symbols=all_symbols, limit=self.config.current_data_scrape_limit, timeframe=pd.Timedelta("1d"))
+
+        logger.info("Fetched symbols: %s", list(result.data))
+
 
         volumes = []
         for symbol, df in result.data.items():
@@ -232,7 +235,7 @@ class ExchangeDatasource(Datasource):
                     data[symbol] = result
 
         if data is None:
-            raise ValueError("Non data fetched.")
+            raise ValueError("No data fetched.")
 
         # only return the symbols with enough data
         data = {key: values for key, values in data.items() if len(values) >= self.config.current_data_scrape_limit}

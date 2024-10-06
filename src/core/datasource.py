@@ -243,9 +243,11 @@ class Datasource(BasePipelineComponent):
         symbols = symbols or self.config.symbols
 
         data = self._scrape_real_data_historic(symbols)
+        
+        data.data = {key: data for key, data in data.data.items() if len(data) > 0}
 
-        self.config.mock_data_start_date = min([min(data.index) for data in data.data.values()])
-        self.config.mock_data_end_date = max([max(data.index) for data in data.data.values()])
+        self.config.mock_data_start_date = min(min(data.index) for data in data.data.values())
+        self.config.mock_data_end_date = max(max(data.index) for data in data.data.values())
 
         logger.info(
             "Scraping process finished. Start date: %s, End date: %s. This data can now be used to test the pipeline.",
