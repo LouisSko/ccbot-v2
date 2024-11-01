@@ -239,45 +239,112 @@ class TargetUpDownNo(TargetGenerator):
         return Data(object_ref=self.config.object_id, data=target_series)
 
 
-# class TargetVolatility(TargetGenerator):
-#     """Preprocessor for classification predicting volatility."""
+class TargetTrend(TargetGenerator):
+    """preprocessor for classification predicting"""
 
-#     def __init__(self, config: TargetSettings):
-#         self.config = config
-#         self.volatility_window = 28
-#         self.min_threshold = 0.002  # 0.2% because of trading fees
+    def __init__(self, config: TargetSettings):
+        self.config = config
 
-#     def create_target(self, data: Data) -> Data:
-#         """Creates the target variable as a binary indicator of high volatility."""
+    def create_target(self, data: Data) -> Data:
+        """Creates the target variable as the return compared to the previous timestep."""
 
-#         logger.info("Start calculating target...")
+        logger.info("Start calculating target...")
 
-#         target_shift = 1  # Number of timesteps to look ahead
-#         target_series = {}
+        target_series = {}
+        # target is the return
+        for symbol, df in data.data.items():
 
-#         for symbol, df in data.data.items():
-#             # Calculate returns
-#             ret = (df["close"].shift(-target_shift) - df["close"]) / df["close"]
+            ma = np.array(df["close"].rolling(window=28, center=True).mean())
+            trend = []
+            min_trend_length = 14
+            lookahead = 1
+            current_trend_inidices = []
+            current_trend = 0
 
-#             # Calculate historical volatility (e.g., using a rolling window)
-#             historical_volatility = ret.rolling(window=self.volatility_window).std()
+            for i in range(0, len(ma) - lookahead):
+                if ma[i + lookahead] > ma[i]:
+                    # flip the trend
+                    if current_trend != 1:
+                        if len(current_trend_inidices) >= min_trend_length:
+                            trend.extend([current_trend] * len(current_trend_inidices))
+                        else:
+                            trend.extend([0] * len(current_trend_inidices))
+                        current_trend_inidices = []
 
-#             # Calculate rolling quantile (60th percentile) as a dynamic threshold
-#             rolling_dynamic_threshold = historical_volatility.rolling(window=self.volatility_window).quantile(0.85)
+                    current_trend_inidices.append(i)
+                    current_trend = 1
 
-#             # Ensure dynamic threshold is at least min_threshold
-#             rolling_dynamic_threshold = rolling_dynamic_threshold.where(
-#                 rolling_dynamic_threshold >= self.min_threshold, self.min_threshold
-#             )
+                elif ma[i + lookahead] < ma[i]:
+                    if current_trend != -1:
+                        if len(current_trend_inidices) >= min_trend_length:
+                            trend.extend([current_trend] * len(current_trend_inidices))
+                        else:
+                            trend.extend([0] * len(current_trend_inidices))
+                        current_trend_inidices = []
 
-#             # Create target based on whether returns exceed the rolling dynamic threshold
-#             target = ret.abs() > rolling_dynamic_threshold
-#             target.name = "target"
-#             target_series[symbol] = target.dropna().astype(int)
+                    current_trend_inidices.append(i)
+                    current_trend = -1
 
-#         logger.info("Calculation of target finished.")
+                else:
+                    current_trend = 0
+                    trend.append(current_trend)
 
-#         return Data(object_ref=self.config.object_id, data=target_series)
+            trend.extend([current_trend] * len(current_trend_inidices))
+            trend.extend([0] * lookahead)  # add zero as last prediction since we have a lookahead
+
+            target = pd.Series(index=df.index, data=trend, name="target")
+            
+            if len(target) > 0:
+                target_series[symbol] = target
+
+                logger.info(
+                    "Calculation of targets finished for %s. Dataset entries: %s",
+                    symbol,
+                    len(target),
+                )
+
+        return Data(object_ref=self.config.object_id, data=target_series)
+
+
+class TargetVolatilityDynamic(TargetGenerator):
+    """Preprocessor for classification predicting volatility."""
+
+    def __init__(self, config: TargetSettings):
+        self.config = config
+        self.volatility_window = 28
+        self.min_threshold = 0.002  # 0.2% because of trading fees
+
+    def create_target(self, data: Data) -> Data:
+        """Creates the target variable as a binary indicator of high volatility."""
+
+        logger.info("Start calculating target...")
+
+        target_shift = 1  # Number of timesteps to look ahead
+        target_series = {}
+
+        for symbol, df in data.data.items():
+            # Calculate returns
+            ret = (df["close"].shift(-target_shift) - df["close"]) / df["close"]
+
+            # Calculate historical volatility (e.g., using a rolling window)
+            historical_volatility = ret.rolling(window=self.volatility_window).std()
+
+            # Calculate rolling quantile (60th percentile) as a dynamic threshold
+            rolling_dynamic_threshold = historical_volatility.rolling(window=self.volatility_window).quantile(0.85)
+
+            # Ensure dynamic threshold is at least min_threshold
+            rolling_dynamic_threshold = rolling_dynamic_threshold.where(
+                rolling_dynamic_threshold >= self.min_threshold, self.min_threshold
+            )
+
+            # Create target based on whether returns exceed the rolling dynamic threshold
+            target = ret.abs() > rolling_dynamic_threshold
+            target.name = "target"
+            target_series[symbol] = target.dropna().astype(int)
+
+        logger.info("Calculation of target finished.")
+
+        return Data(object_ref=self.config.object_id, data=target_series)
 
 
 class TargetVolatility(TargetGenerator):
