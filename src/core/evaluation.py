@@ -250,6 +250,10 @@ def plot_cumulative_profit(df, col: Literal["profit_percent", "profit"] = "profi
     df["cumulative_profit"] = df[col].astype(float).cumsum()
     df["cumulative_net_profit"] = df[f"net_{col}"].astype(float).cumsum()
 
+    if col.endswith("percent"):
+        df["cumulative_profit"] = (1 + df[col]).cumprod() - 1
+        df["cumulative_net_profit"] = (1 + df[f"net_{col}"]).cumprod() - 1
+
     # Plotting
     plt.figure(figsize=(12, 6))
     plt.plot(df["close_date"], df["cumulative_profit"], linestyle="-", label="Cumulative Profit")  # , marker="o")
@@ -325,7 +329,11 @@ def plot_cumulative_profit_by_symbol_and_side(df, column: str = "profit"):
             subset = df[(df["symbol"] == symbol) & (df["side"] == side)].sort_values(by="close_date")
             if subset.empty:
                 continue
-            subset["cumulative_profit"] = subset[column].cumsum()
+
+            if column.endswith("percent"):
+                subset["cumulative_profit"] = (subset[column] + 1).cumprod() - 1
+            else:
+                subset["cumulative_profit"] = subset[column].cumsum()
             ax.plot(subset["close_date"], subset["cumulative_profit"], marker="o", linestyle="-")
 
             # Calculate success percentage
