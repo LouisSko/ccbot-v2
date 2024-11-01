@@ -5,3 +5,8 @@ PIPELINE_DIR = "path/to/save/pipeline"
 MOCK_EX_DIR = "path/to/save/mock-exchange"
 
 LOGGING_LEVEL=INFO
+
+# exchange credentials. Those could vary from exchange to exchange. this is for bitget
+EX_API_KEY=
+SECRET_KEY=
+PASSWORD=
