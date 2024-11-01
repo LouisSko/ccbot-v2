@@ -5,9 +5,9 @@ import sys
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import ccxt
 from dotenv import load_dotenv
 
-from src.adapter.mock_exchange import MockExchange, load_mock_exchange
 from src.adapter.trading_engine import CCXTFuturesTradingEngine
 from src.common_packages import create_logger
 from src.core.bot import TradingBot, TradingBotSettings
@@ -23,9 +23,20 @@ if __name__ == "__main__":
     pipeline: Pipeline = load_pipeline(os.getenv("PIPELINE_DIR"))
     pipeline.activate_simulation_mode()
 
-    mock_exchange: MockExchange = load_mock_exchange(save_directory=os.getenv("MOCK_EX_DIR"))
 
-    settings = EngineSettings(exchange=mock_exchange, symbols=mock_exchange.config.symbols)
+    exchange_class = getattr(ccxt, "bitget")
+    exchange = exchange_class(
+        {
+            "apiKey": os.getenv("EX_API_KEY"),
+            "secret": os.getenv("SECRET_KEY"),
+            "password": os.getenv("PASSWORD"),
+            "options": {"defaultType": "swap"},
+            "timeout": 30000,
+            "enableRateLimit": True,
+        }
+    )
+
+    settings = EngineSettings(exchange=exchange, symbols=pipeline.get_symbols())
     trading_engine = CCXTFuturesTradingEngine(config=settings)
 
     settings = TradingBotSettings(
