@@ -1,0 +1,7 @@
+# Directory where all files regarding the pipeline are going to be stored
+PIPELINE_DIR = "path/to/save/pipeline"
+
+# Directory where all files regarding the mock exchange are going to be stored
+MOCK_EX_DIR = "path/to/save/mock-exchange"
+
+LOGGING_LEVEL=INFO
