@@ -76,7 +76,7 @@ class TradingBot:
                 self.pipeline_current_date = self.config.pipeline.get_current_date()
 
             # train the pipeline every month.
-            if current_date >= self.config.pipeline.last_training_date + pd.DateOffset(months=4):
+            if current_date >= self.config.pipeline.last_training_date + pd.DateOffset(months=2):
                 self.config.pipeline.train()
 
             # get the next date
