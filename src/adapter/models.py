@@ -981,3 +981,233 @@ class PSARModel(Model):
         sharpe_ratio = (avg_return - risk_free_rate) / return_std
 
         return sharpe_ratio.item()
+
+
+class LgbmTrendClf(Model):
+    """LGBM Classification Model which uses randomized search."""
+
+    def __init__(self, config: ModelSettings) -> None:
+        super().__init__(config)
+
+        # create model if it does not exist
+        if not hasattr(self, "model") or self.model is None:
+            self.model = {"model": None, "last_pred_vals": {}}
+
+            self.model["model"] = LGBMClassifier(boosting_type="gbdt", n_jobs=-1, verbose=-1)
+
+    def load(self, model_path: Optional[str] = None) -> None:
+        """Load the model from disk."""
+
+        path = model_path or self.config.training_information.file_path_model
+
+        if os.path.exists(path):
+            self.model = joblib.load(path)
+            logger.info("Model successfully loaded from %s", path)
+        else:
+            logger.error("Model file does not exist at %s", path)
+            raise ValueError("Model path does not exist.")
+
+    def save(self):
+        """Save the trained model to disk."""
+
+        model_dir = os.path.join(self.config.data_directory, "models")
+
+        if not os.path.exists(model_dir):
+            os.makedirs(model_dir)
+
+        if self.config.training_information is None:
+            raise ValueError("No training information available. Seems like the model has not been trained yet.")
+
+        joblib.dump(self.model, self.config.training_information.file_path_model)
+        logger.info("Model saved to %s", self.config.training_information.file_path_model)
+
+    def _train(self, training_data: Data) -> TrainingInformation:
+        """Train the model with hyperparameter tuning.
+
+        Combines all data from training_data, checks for an existing model within the
+        same training period, and trains the model if no saved model is found.
+
+        Args:
+            training_data (Data): A Data object containing training dataframes for each symbol.
+
+        Returns:
+            TrainingInformation: Metadata about the training process, including the symbols,
+                                training period, and model file path.
+        """
+
+        logger.info("Start training the model.")
+
+        # Concatenate all data and sort by index (time)
+        data = pd.concat(training_data.data.values()).sort_index()
+
+        # Separate features (x) and target (y)
+        x = data.drop(columns=["target", "close", "atr"])
+        y = data["target"]
+
+        # Retrieve symbols and training period
+        symbols = list(training_data.data.keys())
+        train_start_date = x.index.min()
+        train_end_date = x.index.max()
+
+        # Build the file path for the model based on the training period
+        model_filename = (
+            f"{self.config.object_id.value}_{train_start_date.isoformat()}_{train_end_date.isoformat()}.joblib"
+        )
+        full_model_path = os.path.join(self.config.data_directory, "models", model_filename)
+
+        # Check if a model already exists for the given period
+        if os.path.exists(full_model_path):
+            logger.info("Found an existing saved model. Skipping training.")
+            self.load(full_model_path)
+        else:
+            # Define hyperparameters for RandomizedSearch
+            param_distributions = {
+                "max_depth": np.arange(1, 10),
+                "learning_rate": 10 ** (np.linspace(-5, -1, 100)),
+                "n_estimators": np.arange(50, 1000),
+                "reg_lambda": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
+                "reg_alpha": sp_uniform(0, 0.25),  # Continuous range from 0 to 0.25
+                "colsample_bytree": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+            }
+
+            # tsv = BlockingTimeSeriesSplit(n_splits=1, test_size=3, margin=0)
+            tscv = TimeSeriesSplit(
+                n_splits=3,
+                test_size=int(len(x) * 0.2),
+                max_train_size=int(len(x) * 0.8),
+            )
+
+            custom_scorer = make_scorer(adapted_f1_score, greater_is_better=True)
+
+            # Initialize RandomizedSearchCV
+            random_search = RandomizedSearchCV(
+                estimator=self.model["model"],
+                param_distributions=param_distributions,
+                n_iter=30,  # Number of parameter settings sampled
+                cv=tscv,
+                scoring=custom_scorer,
+                n_jobs=-1,
+                verbose=1,
+                random_state=42,
+            )
+
+            logger.info("Start hyperparameter tuning with RandomizedSearchCV...")
+
+            # Fit the model with hyperparameter tuning
+            random_search.fit(x, y)
+
+            # Set the best model to self.model
+            self.model["model"] = random_search.best_estimator_
+            # self.model.fit(x, y)
+
+            logger.info("Best parameters found: %s", random_search.best_params_)
+            logger.info("Best score achieved: %f", random_search.best_score_)
+
+            logger.info("Model training complete.")
+
+        # Return training metadata
+        return TrainingInformation(
+            symbols=symbols,
+            train_start_date=train_start_date,
+            train_end_date=train_end_date,
+            file_path_model=full_model_path,
+        )
+
+    def _predict(self, prediction_data: Data) -> List[Prediction]:
+        """Generates predictions based on input data using the trained model.
+
+        Args:
+            prediction_data (Data): A Data object containing symbol-specific
+                                    dataframes for prediction.
+
+        Returns:
+            List[Prediction]: A list of Prediction objects containing predictions
+                            and associated metadata for each symbol.
+        """
+
+        predictions = []
+
+        for symbol, df in prediction_data.data.items():
+
+            # skip symbol if it was not part of the training symbols
+            if symbol not in self.config.training_information.symbols:
+                continue
+
+            if df.empty:
+                continue
+
+            df = df.copy()
+
+            try:
+                # Extract ground truth if present
+                if "target" in df.columns:
+                    ground_truth = df.pop("target")
+                else:
+                    ground_truth = None
+
+                # Extract 'close' and 'atr' columns for further processing
+                close = df.pop("close").to_list()
+                atr = df.pop("atr").to_list()
+                time_stamps = df.index.to_list()
+
+                # Generate predictions
+                y_pred_prob = self.model["model"].predict_proba(df)
+                predicted_indices = y_pred_prob.argmax(axis=1)
+                y_pred = self.model["model"].classes_[predicted_indices]
+
+            except Exception as e:
+                logger.info(df)
+                raise ValueError(f"Error for symbol: {symbol}. len df: {len(df)}") from e
+
+            # update trend predictions based on last n predictions
+            if symbol not in self.model["last_pred_vals"]:
+                self.model["last_pred_vals"][symbol] = {"pred_list": [], "last_date": None}
+
+            # Create a Prediction object for each row of the DataFrame
+            for i in range(len(df)):
+                
+                # a trend is established, if we have 7 consecutive predictions in one direction
+                trend_min_entries = 5
+
+                prediction = int(y_pred[i])
+                current_date = time_stamps[i]
+                
+                # check whether we have conjungtive predictions, e.g. no gaps
+                if self.model["last_pred_vals"][symbol]["last_date"] and (self.model["last_pred_vals"][symbol]["last_date"] + self.config.timeframe) != current_date:
+                    prediction = 0
+                    self.model["last_pred_vals"][symbol]["pred_list"] = []
+
+                # attach the new prediction to the list of latest n predictions and only keep the relevant ones
+                self.model["last_pred_vals"][symbol]["last_date"] = current_date
+                self.model["last_pred_vals"][symbol]["pred_list"].append(prediction)
+                self.model["last_pred_vals"][symbol]["pred_list"] = self.model["last_pred_vals"][symbol]["pred_list"][
+                    -trend_min_entries:
+                ]
+
+                # if not enough values are available, set the prediction to 0
+                if len(self.model["last_pred_vals"][symbol]["pred_list"]) < trend_min_entries:
+                    prediction = 0
+                # if there is no clear trend, set prediction value to 0
+                if prediction == 1:
+                    if sum(self.model["last_pred_vals"][symbol]["pred_list"]) < (trend_min_entries - 1):
+                        prediction = 0
+                elif prediction == -1:
+                    if sum(self.model["last_pred_vals"][symbol]["pred_list"]) > -(trend_min_entries - 1):
+                        prediction = 0
+
+                # Create and store each individual Prediction object
+                predictions.append(
+                    Prediction(
+                        object_ref=self.config.object_id,
+                        symbol=symbol,
+                        prediction=prediction,  # Ensure prediction is an integer
+                        confidence=dict(zip(self.model["model"].classes_, y_pred_prob[i])),
+                        ground_truth=int(ground_truth.iloc[i]) if ground_truth is not None else None,
+                        close=close[i],
+                        atr=atr[i],
+                        time=current_date,
+                        prediction_type=self.config.prediction_type,
+                    )
+                )
+
+        return predictions
