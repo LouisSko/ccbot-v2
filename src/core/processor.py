@@ -2,7 +2,7 @@
 
 import os
 from abc import abstractmethod
-from typing import List, Union, Type
+from typing import List, Type, Union
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -162,14 +162,17 @@ class DataMerger(BasePipelineComponent):
             df_list.extend(all_df_list)
 
             # Merge the dataframes for the symbol along the columns (axis=1)
-            merged_data[symbol] = pd.concat(df_list, join="inner", axis=1)
+            result_df = pd.concat(df_list, join="inner", axis=1)
 
-            logger.debug(
-                "Processed Symbol: %s. Number of features: %s. Dataset entries: %s",
-                symbol,
-                len(merged_data[symbol].columns),
-                len(merged_data[symbol]),
-            )
+            if not result_df.empty and "close" in result_df.columns:
+                merged_data[symbol] = result_df
+
+                logger.info(
+                    "Processed Symbol: %s. Number of features: %s. Dataset entries: %s",
+                    symbol,
+                    len(result_df.columns),
+                    len(result_df),
+                )
 
         logger.info("Data combined successfully.")
 

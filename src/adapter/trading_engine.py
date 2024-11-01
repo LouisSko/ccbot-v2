@@ -96,7 +96,7 @@ class CCXTFuturesTradingEngine(TradingEngine):
         Determine the position sizes for all trade signals collectively, considering open positions and total balance.
 
         NOTE: the current implementation only allows a single trade_signal for each symbol.
-        
+
         Args:
             trade_signals (List[TradeSignal]): A list of trade signals for multiple symbols.
             method (str): The method to use for determining the order size. Options: 'free_balance', 'total_balance', 'risk_based'.
@@ -153,9 +153,15 @@ class CCXTFuturesTradingEngine(TradingEngine):
 
         for trade_signal in trade_signals:
             entry_price = fetch_cached_ticker(trade_signal.symbol, ticker_cache)
-            stop_loss_pct = calculate_stop_loss_pct(trade_signal, entry_price)
-            usd_order_sizes[trade_signal.symbol] = calculate_usd_order_size(balance, method, stop_loss_pct, risk_pct)
-            total_allocated_usd += usd_order_sizes[trade_signal.symbol]
+
+            if entry_price is None:
+                usd_order_sizes[trade_signal.symbol] = 0
+            else:
+                stop_loss_pct = calculate_stop_loss_pct(trade_signal, entry_price)
+                usd_order_sizes[trade_signal.symbol] = calculate_usd_order_size(
+                    balance, method, stop_loss_pct, risk_pct
+                )
+                total_allocated_usd += usd_order_sizes[trade_signal.symbol]
 
         scale_factor = calculate_scaling_factor()
 
@@ -165,11 +171,17 @@ class CCXTFuturesTradingEngine(TradingEngine):
             # Adjust the USD order size based on the scale factor
             usd_order_size = usd_order_sizes[trade_signal.symbol] * scale_factor
 
+            if usd_order_size == 0:
+                trade_signal.order_amount = None
+                continue
+
+
             # Calculate the position size in base currency (e.g., BTC)
             amount = usd_order_size / ticker_cache[trade_signal.symbol]
 
             # Ensure amount is above minimum order size
             min_amount = self.order_details.get(trade_signal.symbol).get("min_amount")
+            
             if min_amount and amount < min_amount:
                 logger.warning(
                     "Specified amount (%s) is smaller than the minimum order quantity (%s) for symbol (%s). Skipping.",

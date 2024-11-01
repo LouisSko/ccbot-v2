@@ -62,23 +62,28 @@ class SignalGenerator(TradeSignalGenerator):
         dir_preds, vola_preds, reg_preds = self.extract_pred_types(predictions)
 
         for key, pred in dir_preds.items():
+            try:
+                # if vola prediction is 0 (low), don't trade
+                if vola_preds and vola_preds[key].prediction == 0:
+                    continue
+
+                if pred.prediction == 1:
+                    position_side = "buy"
+                    limit_price = pred.close - (pred.atr * 0.1)
+                    # limit_price = close * (1 - 0.001)
+
+                elif pred.prediction == -1:
+                    position_side = "sell"
+                    limit_price = pred.close + (pred.atr * 0.1)
+                    # limit_price = close * (1 + 0.001)
+
+                else:
+                    continue
             
-            # if vola prediction is 0 (low), don't trade
-            if vola_preds and vola_preds[key].prediction == 0:
-                continue
-
-            if pred.prediction == 1:
-                position_side = "buy"
-                limit_price = pred.close - (pred.atr * 0.1)
-                # limit_price = close * (1 - 0.001)
-
-            elif pred.prediction == -1:
-                position_side = "sell"
-                limit_price = pred.close + (pred.atr * 0.1)
-                # limit_price = close * (1 + 0.001)
-
-            else:
-                continue
+            except Exception as e:
+                logger.info(50*"-")
+                logger.info(pred)
+                raise ValueError(f"error: {e}") from e
 
             stop_loss_price, _ = self.calculate_stops(pred.close, pred.atr, position_side)
 

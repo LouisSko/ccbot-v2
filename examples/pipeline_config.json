@@ -1,0 +1,563 @@
+[
+    {
+        "pipeline_path": "src.core.pipeline.Pipeline",
+        "timeframe": "4h",
+        "last_training_date": "2024-07-18T16:00:00+00:00",
+        "test_interval_length": "60d"
+    },
+    {
+        "component_type": "datasource",
+        "object_id": {
+            "value": "exchange_datasource"
+        },
+        "resource_path": "src.adapter.datasources.ExchangeDatasource",
+        "config_path": "src.core.datasource.DatasourceConfiguration",
+        "settings_path": "src.adapter.datasources.ExchangeDatasourceSettings",
+        "settings": {
+            "object_id": {
+                "value": "exchange_datasource"
+            },
+            "symbols": [
+                "BTC/USDT:USDT",
+                "ETH/USDT:USDT",
+                "XRP/USDT:USDT",
+                "SOL/USDT:USDT",
+                "PEPE/USDT:USDT",
+                "SUI/USDT:USDT",
+                "NOT/USDT:USDT",
+                "UXLINK/USDT:USDT",
+                "DOG/USDT:USDT",
+                "WIF/USDT:USDT",
+                "ZRO/USDT:USDT",
+                "MEW/USDT:USDT",
+                "UNI/USDT:USDT",
+                "BRETT/USDT:USDT",
+                "TAO/USDT:USDT",
+                "DOGS/USDT:USDT",
+                "FET/USDT:USDT",
+                "AAVE/USDT:USDT",
+                "TIA/USDT:USDT",
+                "SEI/USDT:USDT"
+            ],
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "scrape_start_date": "2020-01-01T00:00:00+00:00",
+            "scrape_end_date": null,
+            "mock_data_start_date": "2020-01-01T04:00:00+00:00",
+            "mock_data_end_date": "2024-10-02T20:00:00+00:00",
+            "simulation_start_date": "2022-01-01T00:00:00+00:00",
+            "simulation_end_date": "2024-10-01T00:00:00+00:00",
+            "exchange_id": "bitget",
+            "timeframe": "4h",
+            "current_data_scrape_limit": 29
+        }
+    },
+    {
+        "component_type": "datasource",
+        "object_id": {
+            "value": "fear_greed_datasource"
+        },
+        "resource_path": "src.adapter.datasources.FearGreedDataSource",
+        "config_path": "src.core.datasource.DatasourceConfiguration",
+        "settings_path": "src.adapter.datasources.FearGreedDatasourceSettings",
+        "settings": {
+            "object_id": {
+                "value": "fear_greed_datasource"
+            },
+            "symbols": null,
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "scrape_start_date": "2020-01-01T00:00:00+00:00",
+            "scrape_end_date": null,
+            "mock_data_start_date": "2020-01-01T00:00:00+00:00",
+            "mock_data_end_date": "2024-10-02T00:00:00+00:00",
+            "simulation_start_date": "2022-01-01T00:00:00+00:00",
+            "simulation_end_date": "2024-10-01T00:00:00+00:00",
+            "timeframe": "4h",
+            "current_data_scrape_limit": 29
+        }
+    },
+    {
+        "component_type": "processor",
+        "object_id": {
+            "value": "feature_processor"
+        },
+        "resource_path": "src.adapter.processors.FeaturesExchange",
+        "config_path": "src.core.processor.DataProcessorConfiguration",
+        "settings_path": "src.core.processor.DataProcessorSettings",
+        "settings": {
+            "object_id": {
+                "value": "feature_processor"
+            },
+            "depends_on": {
+                "value": "exchange_datasource"
+            },
+            "timeframe": "4h"
+        }
+    },
+    {
+        "component_type": "processor",
+        "object_id": {
+            "value": "fear_greed_processor"
+        },
+        "resource_path": "src.adapter.processors.FeaturesFearGreed",
+        "config_path": "src.core.processor.DataProcessorConfiguration",
+        "settings_path": "src.core.processor.DataProcessorSettings",
+        "settings": {
+            "object_id": {
+                "value": "fear_greed_processor"
+            },
+            "depends_on": {
+                "value": "fear_greed_datasource"
+            },
+            "timeframe": "4h"
+        }
+    },
+    {
+        "component_type": "processor",
+        "object_id": {
+            "value": "target_processor_dir"
+        },
+        "resource_path": "src.adapter.processors.TargetUpDownNo",
+        "config_path": "src.core.processor.DataProcessorConfiguration",
+        "settings_path": "src.adapter.processors.TargetSettings",
+        "settings": {
+            "object_id": {
+                "value": "target_processor_dir"
+            },
+            "depends_on": {
+                "value": "exchange_datasource"
+            },
+            "timeframe": "4h",
+            "target_value": 0.002
+        }
+    },
+    {
+        "component_type": "merger",
+        "object_id": {
+            "value": "merger_dir"
+        },
+        "resource_path": "src.core.processor.DataMerger",
+        "config_path": "src.core.processor.MergerConfiguration",
+        "settings_path": "src.core.processor.DataMergerSettings",
+        "settings": {
+            "object_id": {
+                "value": "merger_dir"
+            },
+            "depends_on": [
+                {
+                    "value": "feature_processor"
+                },
+                {
+                    "value": "fear_greed_processor"
+                },
+                {
+                    "value": "target_processor_dir"
+                }
+            ]
+        }
+    },
+    {
+        "component_type": "model",
+        "object_id": {
+            "value": "Model_DART_dir"
+        },
+        "resource_path": "src.adapter.models.LgbmDartClf",
+        "config_path": "src.core.model.ModelConfiguration",
+        "settings_path": "src.core.model.ModelSettings",
+        "settings": {
+            "object_id": {
+                "value": "Model_DART_dir"
+            },
+            "depends_on": {
+                "value": "merger_dir"
+            },
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "timeframe": null,
+            "prediction_type": "direction",
+            "training_information": {
+                "symbols": [
+                    "SEI/USDT:USDT",
+                    "DOG/USDT:USDT",
+                    "TIA/USDT:USDT",
+                    "BTC/USDT:USDT",
+                    "MEW/USDT:USDT",
+                    "AAVE/USDT:USDT",
+                    "NOT/USDT:USDT",
+                    "SUI/USDT:USDT",
+                    "WIF/USDT:USDT",
+                    "ETH/USDT:USDT",
+                    "TAO/USDT:USDT",
+                    "XRP/USDT:USDT",
+                    "SOL/USDT:USDT",
+                    "ZRO/USDT:USDT",
+                    "DOGS/USDT:USDT",
+                    "FET/USDT:USDT",
+                    "UXLINK/USDT:USDT",
+                    "UNI/USDT:USDT",
+                    "BRETT/USDT:USDT"
+                ],
+                "file_path_model": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h/models/Model_DART_dir_2020-01-22T00:00:00+00:00_2024-07-18T16:00:00+00:00.joblib",
+                "train_start_date": "2020-01-22T00:00:00+00:00",
+                "train_end_date": "2024-07-18T16:00:00+00:00"
+            }
+        }
+    },
+    {
+        "component_type": "model",
+        "object_id": {
+            "value": "Model_GBRT_dir"
+        },
+        "resource_path": "src.adapter.models.LgbmGbrtClf",
+        "config_path": "src.core.model.ModelConfiguration",
+        "settings_path": "src.core.model.ModelSettings",
+        "settings": {
+            "object_id": {
+                "value": "Model_GBRT_dir"
+            },
+            "depends_on": {
+                "value": "merger_dir"
+            },
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "timeframe": null,
+            "prediction_type": "direction",
+            "training_information": {
+                "symbols": [
+                    "SEI/USDT:USDT",
+                    "DOG/USDT:USDT",
+                    "TIA/USDT:USDT",
+                    "BTC/USDT:USDT",
+                    "MEW/USDT:USDT",
+                    "AAVE/USDT:USDT",
+                    "NOT/USDT:USDT",
+                    "SUI/USDT:USDT",
+                    "WIF/USDT:USDT",
+                    "ETH/USDT:USDT",
+                    "TAO/USDT:USDT",
+                    "XRP/USDT:USDT",
+                    "SOL/USDT:USDT",
+                    "ZRO/USDT:USDT",
+                    "DOGS/USDT:USDT",
+                    "FET/USDT:USDT",
+                    "UXLINK/USDT:USDT",
+                    "UNI/USDT:USDT",
+                    "BRETT/USDT:USDT"
+                ],
+                "file_path_model": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h/models/Model_GBRT_dir_2020-01-22T00:00:00+00:00_2024-07-18T16:00:00+00:00.joblib",
+                "train_start_date": "2020-01-22T00:00:00+00:00",
+                "train_end_date": "2024-07-18T16:00:00+00:00"
+            }
+        }
+    },
+    {
+        "component_type": "model",
+        "object_id": {
+            "value": "Model_RF_dir"
+        },
+        "resource_path": "src.adapter.models.RfClf",
+        "config_path": "src.core.model.ModelConfiguration",
+        "settings_path": "src.core.model.ModelSettings",
+        "settings": {
+            "object_id": {
+                "value": "Model_RF_dir"
+            },
+            "depends_on": {
+                "value": "merger_dir"
+            },
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "timeframe": null,
+            "prediction_type": "direction",
+            "training_information": {
+                "symbols": [
+                    "SEI/USDT:USDT",
+                    "DOG/USDT:USDT",
+                    "TIA/USDT:USDT",
+                    "BTC/USDT:USDT",
+                    "MEW/USDT:USDT",
+                    "AAVE/USDT:USDT",
+                    "NOT/USDT:USDT",
+                    "SUI/USDT:USDT",
+                    "WIF/USDT:USDT",
+                    "ETH/USDT:USDT",
+                    "TAO/USDT:USDT",
+                    "XRP/USDT:USDT",
+                    "SOL/USDT:USDT",
+                    "ZRO/USDT:USDT",
+                    "DOGS/USDT:USDT",
+                    "FET/USDT:USDT",
+                    "UXLINK/USDT:USDT",
+                    "UNI/USDT:USDT",
+                    "BRETT/USDT:USDT"
+                ],
+                "file_path_model": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h/models/Model_RF_dir_2020-01-22T00:00:00+00:00_2024-07-18T16:00:00+00:00.joblib",
+                "train_start_date": "2020-01-22T00:00:00+00:00",
+                "train_end_date": "2024-07-18T16:00:00+00:00"
+            }
+        }
+    },
+    {
+        "component_type": "ensemble",
+        "object_id": {
+            "value": "ensemble_dir"
+        },
+        "resource_path": "src.core.ensemble.EnsembleModel",
+        "config_path": "src.core.ensemble.EnsembleConfiguration",
+        "settings_path": "src.core.ensemble.EnsembleSettings",
+        "settings": {
+            "object_id": {
+                "value": "ensemble_dir"
+            },
+            "depends_on": [
+                {
+                    "value": "Model_RF_dir"
+                },
+                {
+                    "value": "Model_GBRT_dir"
+                },
+                {
+                    "value": "Model_DART_dir"
+                }
+            ],
+            "ground_truth_object_ref": {
+                "value": "Model_RF_dir"
+            },
+            "prediction_type": "direction",
+            "agreement_type_clf": "voting",
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h"
+        }
+    },
+    {
+        "component_type": "processor",
+        "object_id": {
+            "value": "target_processor_vola"
+        },
+        "resource_path": "src.adapter.processors.TargetVolatility",
+        "config_path": "src.core.processor.DataProcessorConfiguration",
+        "settings_path": "src.adapter.processors.TargetSettings",
+        "settings": {
+            "object_id": {
+                "value": "target_processor_vola"
+            },
+            "depends_on": {
+                "value": "exchange_datasource"
+            },
+            "timeframe": "4h",
+            "target_value": 0.006
+        }
+    },
+    {
+        "component_type": "merger",
+        "object_id": {
+            "value": "merger_vola"
+        },
+        "resource_path": "src.core.processor.DataMerger",
+        "config_path": "src.core.processor.MergerConfiguration",
+        "settings_path": "src.core.processor.DataMergerSettings",
+        "settings": {
+            "object_id": {
+                "value": "merger_vola"
+            },
+            "depends_on": [
+                {
+                    "value": "feature_processor"
+                },
+                {
+                    "value": "fear_greed_processor"
+                },
+                {
+                    "value": "target_processor_vola"
+                }
+            ]
+        }
+    },
+    {
+        "component_type": "model",
+        "object_id": {
+            "value": "Model_DART_vola"
+        },
+        "resource_path": "src.adapter.models.LgbmDartClf",
+        "config_path": "src.core.model.ModelConfiguration",
+        "settings_path": "src.core.model.ModelSettings",
+        "settings": {
+            "object_id": {
+                "value": "Model_DART_vola"
+            },
+            "depends_on": {
+                "value": "merger_vola"
+            },
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "timeframe": null,
+            "prediction_type": "volatility",
+            "training_information": {
+                "symbols": [
+                    "SEI/USDT:USDT",
+                    "DOG/USDT:USDT",
+                    "TIA/USDT:USDT",
+                    "BTC/USDT:USDT",
+                    "MEW/USDT:USDT",
+                    "AAVE/USDT:USDT",
+                    "NOT/USDT:USDT",
+                    "SUI/USDT:USDT",
+                    "WIF/USDT:USDT",
+                    "ETH/USDT:USDT",
+                    "TAO/USDT:USDT",
+                    "XRP/USDT:USDT",
+                    "SOL/USDT:USDT",
+                    "ZRO/USDT:USDT",
+                    "DOGS/USDT:USDT",
+                    "FET/USDT:USDT",
+                    "UXLINK/USDT:USDT",
+                    "UNI/USDT:USDT",
+                    "BRETT/USDT:USDT"
+                ],
+                "file_path_model": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h/models/Model_DART_vola_2020-01-22T00:00:00+00:00_2024-07-18T16:00:00+00:00.joblib",
+                "train_start_date": "2020-01-22T00:00:00+00:00",
+                "train_end_date": "2024-07-18T16:00:00+00:00"
+            }
+        }
+    },
+    {
+        "component_type": "model",
+        "object_id": {
+            "value": "Model_GBRT_vola"
+        },
+        "resource_path": "src.adapter.models.LgbmGbrtClf",
+        "config_path": "src.core.model.ModelConfiguration",
+        "settings_path": "src.core.model.ModelSettings",
+        "settings": {
+            "object_id": {
+                "value": "Model_GBRT_vola"
+            },
+            "depends_on": {
+                "value": "merger_vola"
+            },
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "timeframe": null,
+            "prediction_type": "volatility",
+            "training_information": {
+                "symbols": [
+                    "SEI/USDT:USDT",
+                    "DOG/USDT:USDT",
+                    "TIA/USDT:USDT",
+                    "BTC/USDT:USDT",
+                    "MEW/USDT:USDT",
+                    "AAVE/USDT:USDT",
+                    "NOT/USDT:USDT",
+                    "SUI/USDT:USDT",
+                    "WIF/USDT:USDT",
+                    "ETH/USDT:USDT",
+                    "TAO/USDT:USDT",
+                    "XRP/USDT:USDT",
+                    "SOL/USDT:USDT",
+                    "ZRO/USDT:USDT",
+                    "DOGS/USDT:USDT",
+                    "FET/USDT:USDT",
+                    "UXLINK/USDT:USDT",
+                    "UNI/USDT:USDT",
+                    "BRETT/USDT:USDT"
+                ],
+                "file_path_model": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h/models/Model_GBRT_vola_2020-01-22T00:00:00+00:00_2024-07-18T16:00:00+00:00.joblib",
+                "train_start_date": "2020-01-22T00:00:00+00:00",
+                "train_end_date": "2024-07-18T16:00:00+00:00"
+            }
+        }
+    },
+    {
+        "component_type": "model",
+        "object_id": {
+            "value": "Model_RF_vola"
+        },
+        "resource_path": "src.adapter.models.RfClf",
+        "config_path": "src.core.model.ModelConfiguration",
+        "settings_path": "src.core.model.ModelSettings",
+        "settings": {
+            "object_id": {
+                "value": "Model_RF_vola"
+            },
+            "depends_on": {
+                "value": "merger_vola"
+            },
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h",
+            "timeframe": null,
+            "prediction_type": "volatility",
+            "training_information": {
+                "symbols": [
+                    "SEI/USDT:USDT",
+                    "DOG/USDT:USDT",
+                    "TIA/USDT:USDT",
+                    "BTC/USDT:USDT",
+                    "MEW/USDT:USDT",
+                    "AAVE/USDT:USDT",
+                    "NOT/USDT:USDT",
+                    "SUI/USDT:USDT",
+                    "WIF/USDT:USDT",
+                    "ETH/USDT:USDT",
+                    "TAO/USDT:USDT",
+                    "XRP/USDT:USDT",
+                    "SOL/USDT:USDT",
+                    "ZRO/USDT:USDT",
+                    "DOGS/USDT:USDT",
+                    "FET/USDT:USDT",
+                    "UXLINK/USDT:USDT",
+                    "UNI/USDT:USDT",
+                    "BRETT/USDT:USDT"
+                ],
+                "file_path_model": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h/models/Model_RF_vola_2020-01-22T00:00:00+00:00_2024-07-18T16:00:00+00:00.joblib",
+                "train_start_date": "2020-01-22T00:00:00+00:00",
+                "train_end_date": "2024-07-18T16:00:00+00:00"
+            }
+        }
+    },
+    {
+        "component_type": "ensemble",
+        "object_id": {
+            "value": "ensemble_vola"
+        },
+        "resource_path": "src.core.ensemble.EnsembleModel",
+        "config_path": "src.core.ensemble.EnsembleConfiguration",
+        "settings_path": "src.core.ensemble.EnsembleSettings",
+        "settings": {
+            "object_id": {
+                "value": "ensemble_vola"
+            },
+            "depends_on": [
+                {
+                    "value": "Model_RF_vola"
+                },
+                {
+                    "value": "Model_GBRT_vola"
+                },
+                {
+                    "value": "Model_DART_vola"
+                }
+            ],
+            "ground_truth_object_ref": {
+                "value": "Model_RF_vola"
+            },
+            "prediction_type": "volatility",
+            "agreement_type_clf": "voting",
+            "data_directory": "/Users/louisskowronek/Documents/Projects/ccbot-v2/configs/pipeline-vola2-bitget-4h"
+        }
+    },
+    {
+        "component_type": "generator",
+        "object_id": {
+            "value": "signal_generator"
+        },
+        "resource_path": "src.adapter.signal_generators.SignalGenerator",
+        "config_path": "src.core.generator.GeneratorConfiguration",
+        "settings_path": "src.core.generator.GeneratorSettings",
+        "settings": {
+            "object_id": {
+                "value": "signal_generator"
+            },
+            "depends_on": [
+                {
+                    "value": "ensemble_dir"
+                },
+                {
+                    "value": "ensemble_vola"
+                }
+            ],
+            "order_type": "limit"
+        }
+    }
+]

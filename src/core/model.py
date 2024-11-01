@@ -2,8 +2,9 @@
 
 import os
 from abc import abstractmethod
-from typing import Dict, List, Literal, Optional, Tuple, Type, Union
+from typing import Dict, List, Literal, Optional, Type, Union
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, model_validator
 from pydantic.config import ConfigDict
@@ -93,7 +94,7 @@ class Prediction(BaseModel):
     time: pd.Timestamp
     close: Optional[float] = None  # current price
     atr: Optional[float] = None  # current ATR value, used for stop loss/take profit
-    confidence: Optional[float] = None  # Optional confidence score
+    confidence: Optional[Dict[int, float]] = None  # Optional confidence score for each class
     prediction_type: Literal["regression", "direction", "volatility"]
     prediction: Union[int, float]
     ground_truth: Optional[Union[int, float]] = None
@@ -113,14 +114,19 @@ class Prediction(BaseModel):
         elif values.prediction_type == "direction":
             if values.prediction not in [-1, 0, 1]:
                 raise ValueError("For 'prediction_type' 'direction', 'prediction' must be -1, 0, or 1.")
-            if values.ground_truth is not None and values.ground_truth not in [-1, 0, 1]:
+            if values.ground_truth and values.ground_truth not in [-1, 0, 1]:
                 raise ValueError("For 'prediction_type' 'direction', 'ground_truth' must be -1, 0, or 1.")
+            if values.confidence and not all(key in [-1, 0, 1] for key in values.confidence):
+                raise ValueError("Keys of 'confidence' need to match the classes -1, 0, and 1.")
 
         elif values.prediction_type == "volatility":
             if values.prediction not in [0, 1]:
                 raise ValueError("For 'prediction_type' 'volatility', 'prediction' must be 0 or 1.")
             if values.ground_truth is not None and values.ground_truth not in [-1, 0, 1]:
                 raise ValueError("For 'prediction_type' 'volatility', 'ground_truth' must be 0 or 1.")
+            if values.confidence and not all(key in [-1, 0, 1] for key in values.confidence):
+                raise ValueError("Keys of 'confidence' need to match the classes 0 and 1.")
+
         return values
 
 
