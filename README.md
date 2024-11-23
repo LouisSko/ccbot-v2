@@ -42,6 +42,10 @@ pip install -r requirements.txt
 cp .example_env .env
 ```
 
+### 5. Set Python Path
+```bash
+export PYTHONPATH=$(pwd)/src:$PYTHONPATH 
+```
 Configure your exchange API credentials and paths in the `.env` file. The current setup uses Bitget, but other CCXT-supported exchanges can be integrated with minor code adaptations.
 
 ## Components
