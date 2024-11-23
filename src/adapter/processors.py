@@ -1,11 +1,13 @@
 """Module for implementing the processors."""
 
 import os
-from typing import Callable, List, Optional
+import time
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import ta
+from pydantic import ConfigDict, Field
 
 from src.common_packages import create_logger
 from src.core.datasource import Data
@@ -177,6 +179,219 @@ class FeaturesPSAR(FeatureGenerator):
         return Data(object_ref=self.config.object_id, data=data_processed)
 
 
+class FeatureSupResSettings(DataProcessorSettings):
+    """settings for support/resistance feature generator."""
+
+    possible_resistance: Optional[Dict[str, List[Tuple[float, pd.Timestamp]]]] = Field(default_factory=dict)
+    possible_support: Optional[Dict[str, List[Tuple[float, pd.Timestamp]]]] = Field(default_factory=dict)
+    previous_candle_color: Optional[Dict[str, Literal["green", "red"]]] = Field(default_factory=dict)
+    prev_date: Optional[Dict[str, pd.Timestamp]] = Field(default_factory=dict)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class FeatureSupRes(FeatureGenerator):
+    """Feature generator to extract support and resistance levels."""
+
+    def __init__(self, config: FeatureSupResSettings):
+        super().__init__(config)
+        self.config = config
+
+    def create_features(self, data: Data) -> Data:
+        """Function to get support and resistance levels with dependencies on previous results."""
+
+        data_processed = {}
+
+        for symbol, df in data.data.items():
+
+            df = df.copy()
+            # Initialize the required columns with NaN
+            df["all_support_levels"] = np.nan
+            df["all_resistance_levels"] = np.nan
+
+            # Iterate through rows while accounting for previous dependencies
+            all_support_levels = []
+            all_resistance_levels = []
+
+            for idx, row in df.iterrows():
+                support_levels, resistance_levels = self._find_support_and_resistance(
+                    symbol, row["open"], row["close"], row["high"], row["low"], idx  # timestamp as the index
+                )
+
+                support_levels = self._filter_levels(support_levels, percentage_threshold=0.01)
+                resistance_levels = self._filter_levels(resistance_levels, percentage_threshold=0.01)
+
+                # Store all levels in lists and assign to columns if levels are found
+                all_support_levels.append(support_levels if support_levels else [])
+                all_resistance_levels.append(resistance_levels if resistance_levels else [])
+
+            # Assign the lists of all levels to the DataFrame after looping
+            df["all_support_levels"] = all_support_levels
+            df["all_resistance_levels"] = all_resistance_levels
+
+            data_processed[symbol] = df
+
+        return Data(object_ref=self.config.object_id, data=data_processed)
+
+    def _find_support_and_resistance(
+        self,
+        symbol: str,
+        open_price: float,
+        close: float,
+        high: float,
+        low: float,
+        timestamp: pd.Timestamp,
+    ) -> Tuple[List[Tuple[float, pd.Timestamp]], List[Tuple[float, pd.Timestamp]]]:
+        """Process a single candle to find support and resistance.
+
+        Args:
+            symbol (str): symbol for finding the resistance
+            open_price_price (float): open_priceing price of the candle.
+            close (float): Closing price of the candle.
+            high (float): Highest price of the candle.
+            low (float): Lowest price of the candle.
+
+        Returns:
+            (Tuple[List[Tuple[float, pd.Timestamp]], List[Tuple[float, pd.Timestamp]]]): Tuple of support levels and resistance levels.
+                For each support and resistance the corresponding timestamp is collected.
+                e.g.: ([(level, pd.Timestamp), (level, pd.Timestamp)], [(level, pd.Timestamp), (level, pd.Timestamp)])
+        """
+
+        if symbol not in self.config.possible_resistance:
+            self.config.possible_resistance[symbol] = []
+        if symbol not in self.config.possible_support:
+            self.config.possible_support[symbol] = []
+        if symbol not in self.config.previous_candle_color:
+            self.config.previous_candle_color[symbol] = []
+
+        candle_color = "green" if close > open_price else "red"
+
+        # check wether we have the correct date. We should never have a break between recorded last date and current date. Otherwise we risk to mess up the levels
+        # TODO: this needs to be fixed. when we train, we start from the beginning again, making the current timestamp way older than the prev_date. The approach only works if we have don't train the model
+        if symbol in self.config.prev_date and ((self.config.prev_date[symbol] + self.config.timeframe) > timestamp):
+            return [], []
+
+        self.config.prev_date[symbol] = timestamp
+
+        # Update resistance
+        for i in range(len(self.config.possible_resistance[symbol]) - 1, -1, -1):
+
+            level = self.config.possible_resistance[symbol][i][0]  # extract level
+            if (open_price < level and high > level) or (open_price < close and high > level and low < level):
+                self.config.possible_resistance[symbol].pop(i)
+
+        # Update support
+        for i in range(len(self.config.possible_support[symbol]) - 1, -1, -1):
+            level = self.config.possible_support[symbol][i][0]
+            if (open_price > level and low < level) or (open_price > close and high > level and low < level):
+                self.config.possible_support[symbol].pop(i)
+
+        # Potentially add support if color changes
+        if candle_color != self.config.previous_candle_color[symbol]:
+            if close > open_price:
+                self.config.possible_resistance[symbol].append((float(low), timestamp))
+            else:
+                self.config.possible_support[symbol].append((float(high), timestamp))
+
+        # Save previous values
+        self.config.previous_candle_color[symbol] = candle_color
+
+        # highest first
+        self.config.possible_support[symbol] = sorted(
+            self.config.possible_support[symbol], reverse=True, key=lambda x: x[0]
+        )
+
+        # lowest first
+        self.config.possible_resistance[symbol] = sorted(
+            self.config.possible_resistance[symbol], reverse=False, key=lambda x: x[0]
+        )
+
+        # find relevant sup and res levels
+        support_levels = [
+            possible_level for possible_level in self.config.possible_support[symbol] if possible_level[0] < low
+        ]
+        resistance_levels = [
+            possible_level for possible_level in self.config.possible_resistance[symbol] if possible_level[0] > high
+        ]
+
+        return support_levels, resistance_levels
+
+    def _filter_levels(
+        self,
+        level_list: List[Tuple[float, pd.Timestamp]],
+        percentage_threshold: float,
+    ) -> List[Tuple[float, pd.Timestamp]]:
+        """Filter support and resistance levels based on a specified percentage threshold.
+
+        This function iterates through an array of levels and filters out levels
+        that are too close to the next one based on a calculated threshold. The
+        threshold is a percentage of the current level's value. The last level is
+        always retained. only keep a value if its further apart from the level below as the threshold
+
+        Args:
+            arr (Union[List[float], np.ndarray]): An array or list of support and resistance levels.
+            percentage_threshold (float): The percentage used to calculate the threshold for filtering. In the range of [0-1]
+
+        Returns:
+            np.ndarray: A filtered array of support and resistance levels.
+        """
+
+        if len(level_list) == 0:
+            return []
+
+        reduced_level_list = []
+
+        for i in range(0, len(level_list) - 1):
+            threshold = level_list[i][0] * percentage_threshold
+            if abs(level_list[i][0] - level_list[i + 1][0]) > threshold:
+                reduced_level_list.append(level_list[i])
+
+        # add the last entry
+        reduced_level_list.append(level_list[-1])
+
+        return reduced_level_list
+
+
+class TargetSupRes(TargetGenerator):
+    """Target calculator for sup, res model"""
+
+    def create_target(self, data: Data) -> Data:
+        """Creates the target variable as the return compared to the previous timestep."""
+
+        logger.info("Start calculating target...")
+
+        target_series = {}
+
+        for symbol, df in data.data.items():
+            targets_list = []
+            df = df.reset_index(drop=False)  # Ensure continuous indexing for easier row access
+
+            for i in range(len(df) - 1):  # Skip the last row since there's no "next" candle
+                row = df.iloc[i]
+                next_row = df.iloc[i + 1]
+                target_list = []
+
+                for level, _ in row["all_support_levels"]:
+                    # Check if the level was hit and if the next close is above the level
+                    if level > next_row["low"]:
+                        if (next_row["close"] - level) > 0:
+                            target_list.append(1)
+                        else:
+                            target_list.append(0)
+
+                targets_list.append(target_list)
+
+            # Append a placeholder for the last row to maintain the length of the DataFrame
+            # targets_list.append(np.nan)
+            targets_list.append([])
+
+            target_series[symbol] = pd.Series(targets_list, index=df["time"], name="target")
+
+        logger.info("Calculation of targets finished.")
+
+        return Data(object_ref=self.config.object_id, data=target_series)
+
+
 class TargetSettings(DataProcessorSettings):
     """settings for target generator."""
 
@@ -190,6 +405,7 @@ class TargetUpDownNo(TargetGenerator):
     """preprocessor for classification predicting"""
 
     def __init__(self, config: TargetSettings):
+        super().__init__(config)
         self.config = config
 
     def create_target(self, data: Data) -> Data:
@@ -293,7 +509,7 @@ class TargetTrend(TargetGenerator):
             trend.extend([0] * lookahead)  # add zero as last prediction since we have a lookahead
 
             target = pd.Series(index=df.index, data=trend, name="target")
-            
+
             if len(target) > 0:
                 target_series[symbol] = target
 
@@ -490,6 +706,9 @@ def resample_with_forward_fill(df: pd.DataFrame, timeframe: pd.Timedelta) -> pd.
     Returns:
         pd.DataFrame: The resampled DataFrame with missing values forward-filled.
     """
+
+    if df.empty:
+        return df
 
     # Find the last date in the DataFrame
     last_date = df.index[-1]
