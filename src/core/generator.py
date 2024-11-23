@@ -26,7 +26,7 @@ class TradeSignal(BaseModel):
     order_type: str = Field(..., description="Type of order: either 'limit' or 'market'")
 
     # those are values which are assigned based on the prediction
-    position_side: str = Field(..., description="Type of position: either 'buy', 'sell'")
+    position_side: Literal["buy", "sell"]
     limit_price: Optional[float] = Field(None, description="Limit price for the trade (optional for market orders)")
     stop_loss_price: Optional[float] = Field(None, description="Stop loss price (optional)")
     take_profit_price: Optional[float] = Field(None, description="Take profit price (optional)")

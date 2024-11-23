@@ -2,10 +2,10 @@
 
 import os
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Literal, Optional
 
 from ccxt import Exchange
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from src.common_packages import create_logger
 from src.core.generator import TradeSignal
@@ -15,6 +15,24 @@ logger = create_logger(
     logger_name=__name__,
 )
 
+
+class Order(BaseModel):
+    """Order for an exchange"""
+
+    symbol: str
+    type: Literal["market", "limit", "SL-market", "TP-market"]
+    side: Literal["buy", "sell"]
+    amount: float  # order amount in native currency
+    price: Optional[float] = None # only needed for limit order type
+    params: Optional[dict] = None  # optional parameters to save
+
+    @model_validator(mode="after")
+    def validate_price_for_limit_orders(cls, values):  # pylint: disable=no-self-argument
+        """Ensure price is specified for limit orders."""
+        if values.type in ["limit", "SL-market", "TP-market"] and values.price is None:
+            raise ValueError("Price must be specified for limit orders.")
+
+        return values
 
 class EngineSettings(BaseModel):
     """Initialize the Exchange object with a specific exchange ID.

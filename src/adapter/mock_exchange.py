@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 from importlib import import_module
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Literal, Optional, Union
 
 import ccxt
 import joblib
@@ -15,6 +15,7 @@ from src.adapter.datasources import ExchangeDatasource, ExchangeDatasourceSettin
 from src.common_packages import CustomJSONEncoder, create_logger, timestamp_decoder
 from src.core.base import BaseConfiguration, ObjectId
 from src.core.datasource import Data
+from src.core.engine import Order
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),
@@ -81,6 +82,71 @@ class MockExchangeSettings(BaseModel):
         return value
 
 
+class Transaction(BaseModel):
+    """Transaction on the exchange"""
+
+    time: pd.Timestamp
+    symbol: str
+    type: Literal["Funding fee", "Close Long", "Close Short", "Open Long", "Open Short"]
+    fee_usd: float
+    price: float
+    quantity: float
+    profit_usd: float
+    profit_pct: float
+    balance: float
+    order: Optional[Order] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class Ohlcv(BaseModel):
+    """ohlcv data for a coin"""
+
+    symbol: str
+    time: pd.Timestamp
+    close: float
+    low: float
+    high: float
+    volume: float
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class ExchangeOrder(Order):
+    """exchange order having a specific id."""
+
+    id: str
+    time: pd.Timestamp
+    fee_usd: Optional[float] = None  # an executed order has a fee associated
+    amount_usd: Optional[float] = None
+    linked_id: Optional[str] = None  # links a SL, TP market order to its actual order
+    reduce_only: bool = False
+    
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+
+class Position(BaseModel):
+    """Position for a symbol"""
+
+    holdSide: Literal["long", "short"]
+    symbol: str
+    orders: List[ExchangeOrder]
+
+    def get_average_price(self) -> float:
+        """Calculate the average price of the position based on orders."""
+
+        total = self.get_total()
+        if total == 0:
+            return 0.0  # Avoid division by zero
+        sum_amount_usd = sum(order.amount_usd or 0.0 for order in self.orders)
+        return sum_amount_usd / total
+
+    def get_total(self) -> float:
+        """Calculate the total position size based on orders (in native currency)"""
+
+        return sum(order.amount_usd or 0.0 for order in self.orders)
+
+
 class MockExchangeConfiguration(BaseConfiguration):
     """Configuration specific to a model."""
 
@@ -102,14 +168,16 @@ class MockExchange(ccxt.bitget):
         super().__init__(config.exchange_config)
         self.config = config
 
-        self.positions = {}
-        self.pending_orders = []
-        self.trade_history = []
+        self.positions: Dict[str, Position] = {}
+        self.pending_orders: List[ExchangeOrder] = []
+        self.transaction_history: List[Transaction] = []
+
+        # self.trade_history = []
 
         # Initialize balance
-        self.balance_total = 1000
+        self.balance_total = 10000
         self.balance_free = self.balance_total
-        self.locked_balance = 0.0  # Balance reserved for limit orders
+        self.balance_locked = 0.0  # Balance reserved for limit orders
 
         self.current_date = None
         self.current_data = None
@@ -219,8 +287,10 @@ class MockExchange(ccxt.bitget):
             path (str): The file path where the trade history will be saved.
         """
 
+        serialized_history = [transaction.model_dump() for transaction in self.transaction_history]
+
         with open(path, "w", encoding="utf8") as file:
-            json.dump(self.trade_history, file, indent=4, default=str)
+            json.dump(serialized_history, file, indent=4, default=str, cls=CustomJSONEncoder)
         logger.info("Trade history saved to: %s", path)
 
     def next_step(self):
@@ -243,38 +313,25 @@ class MockExchange(ccxt.bitget):
         executed_orders = []
 
         for order in self.pending_orders:
-            # TODO: problem is that we might overwrite a long position or a short position in case its triggered in both directions. Can mitigate this problem byhaving more finegrained data but cannot solve it.
-            symbol = order.get("symbol")
-            side = order.get("side")
-            price = order.get("price")
 
-            # Get the current high/low price
-            current_data = self._fetch_ohlcv(symbol)
-            if not current_data:
+            # ignore reduce only orders
+            if order.reduce_only:
                 continue
 
-            current_low = current_data["low"]
-            current_high = current_data["high"]
+            ohlcv = self._fetch_ohlcv(order.symbol)
+
+            if not ohlcv:
+                continue
 
             #  # a new position is opened. Check if limit order should be executed, TODO: only a single position can be added. How does this work for the real exchange?
-            if (side == "buy" and current_low <= price) or (side == "sell" and current_high >= price):
-                # only add the position, in case no position is open. This is not completly realistic Otherwise do a self.position long and short or a list of dict positions for each symbol
-                if symbol not in self.positions:
+            if (order.side == "buy" and ohlcv.low <= order.price) or (
+                order.side == "sell" and ohlcv.high >= order.price
+            ):
+                self._remove_pending_order(order)
+                self._add_position(order)
+                logger.info("Executed limit order: %s", order)
 
-                    self._create_position(symbol, order)
-                    logger.info(
-                        "Executed limit order for symbol: %s, side: %s, amount: %s at price: %s",
-                        symbol,
-                        side,
-                        order["total"],
-                        price,
-                    )
-
-                    executed_orders.append(order)
-
-        # Remove executed orders from pending orders
-        for order in executed_orders:
-            self.pending_orders.remove(order)
+                executed_orders.append(order)
 
     def check_stop_losses(self) -> None:
         """Check all open positions to see if the stop loss condition is met.
@@ -282,27 +339,34 @@ class MockExchange(ccxt.bitget):
         Returns:
             None
         """
-
-        for symbol, position in list(self.positions.items()):
-            stop_loss_price = position.get("stopLoss", {}).get("triggerPrice", None)
-
-            if stop_loss_price is None:
+        for order in self.pending_orders:
+            if order.reduce_only is False:
+                continue
+            if order.type != "SL-market":
+                continue
+            if order.symbol not in self.positions:
+                self._remove_pending_order(order)
+                continue
+            open_order_ids = [o.id for o in self.positions[order.symbol].orders]
+            if order.linked_id not in open_order_ids:
+                self._remove_pending_order(order)
                 continue
 
-            current_data = self._fetch_ohlcv(symbol)
-            if not current_data:
+            stop_loss_price = order.price
+
+            ohlcv = self._fetch_ohlcv(order.symbol)
+            if not ohlcv:
+                logger.info("No ohlcv data for this entry.")
                 continue
 
-            current_low = current_data["low"]
-            current_high = current_data["high"]
-            hold_side = position["holdSide"]
+            if self.positions[order.symbol].holdSide == "long" and ohlcv.low < stop_loss_price:
+                logger.info("Stop loss triggered for long position: %s", order.symbol)
+                self.close_position(order.symbol, side="long", order_ids=[order.linked_id])
+            elif self.positions[order.symbol].holdSide == "short" and ohlcv.high > stop_loss_price:
+                logger.info("Stop loss triggered for short position: %s", order.symbol)
+                self.close_position(order.symbol, side="short", order_ids=[order.linked_id])
 
-            if hold_side == "long" and current_low < stop_loss_price:
-                logger.info("Stop loss triggered for long position: %s", symbol)
-                self.close_position(symbol, side="long", stop_loss_triggered=True)
-            elif hold_side == "short" and current_high > stop_loss_price:
-                logger.info("Stop loss triggered for short position: %s", symbol)
-                self.close_position(symbol, side="short", stop_loss_triggered=True)
+            self._remove_pending_order(order)
 
     def check_take_profit(self) -> None:
         """Check all open positions to see if the stop loss condition is met.
@@ -311,45 +375,86 @@ class MockExchange(ccxt.bitget):
             None
         """
 
-        for symbol, position in list(self.positions.items()):
-            take_profit_price = position.get("takeProfit", {}).get("triggerPrice", None)
-
-            if take_profit_price is None:
+        for order in self.pending_orders:
+            if order.reduce_only is False:
+                continue
+            if order.type != "TP-market":
+                continue
+            if order.symbol not in self.positions:
+                self._remove_pending_order(order)
+                continue
+            open_order_ids = [o.id for o in self.positions[order.symbol].orders]
+            if order.linked_id not in open_order_ids:
+                self._remove_pending_order(order)
                 continue
 
-            current_data = self._fetch_ohlcv(symbol)
-            current_low = current_data["low"]
-            current_high = current_data["high"]
-            current_close = current_data["close"]
-            hold_side = position["holdSide"]
-            open_date = position["open_date"]
+            take_profit_price = order.price
+
+            ohlcv = self._fetch_ohlcv(order.symbol)
+
+            if not ohlcv:
+                logger.info("No ohlcv data for this entry.")
+                continue
+
+            position_side = self.positions[order.symbol].holdSide
 
             # restricted take profit simulation if the open date is the current date because based on ohlc candles its not possible to tell if take profit was hit
-            if open_date == self.current_date:
-                if hold_side == "long" and current_close > take_profit_price:
-                    logger.info("Take profit triggered for long position: %s", symbol)
-                    self.close_position(symbol, side="long", take_profit_triggered=True)
-                elif hold_side == "short" and current_close < take_profit_price:
-                    logger.info("Take profit triggered for short position: %s", symbol)
-                    self.close_position(symbol, side="short", take_profit_triggered=True)
+            if order.time == self.current_date:
+                if position_side == "long" and ohlcv.close > take_profit_price:
+                    logger.info("Take profit triggered for long position: %s", order.symbol)
+                    self.close_position(order.symbol, side="long", order_ids=[order.linked_id])
+                elif position_side == "short" and ohlcv.close < take_profit_price:
+                    logger.info("Take profit triggered for short position: %s", order.symbol)
+                    self.close_position(order.symbol, side="short", order_ids=[order.linked_id])
             else:
-                if hold_side == "long" and current_high > take_profit_price:
-                    logger.info("Take profit triggered for long position: %s", symbol)
-                    self.close_position(symbol, side="long", take_profit_triggered=True)
-                elif hold_side == "short" and current_low < take_profit_price:
-                    logger.info("Take profit triggered for short position: %s", symbol)
-                    self.close_position(symbol, side="short", take_profit_triggered=True)
+                if position_side == "long" and ohlcv.high > take_profit_price:
+                    logger.info("Take profit triggered for long position: %s", order.symbol)
+                    self.close_position(order.symbol, side="long", order_ids=[order.linked_id])
+                elif position_side == "short" and ohlcv.low < take_profit_price:
+                    logger.info("Take profit triggered for short position: %s", order.symbol)
+                    self.close_position(order.symbol, side="short", order_ids=[order.linked_id])
+
+            self._remove_pending_order(order)
 
     def _generate_order_id(self) -> str:
         """Generate a unique order ID using UUID."""
         return str(uuid.uuid4())
 
-    def _remove_position(self, symbol: str) -> None:
-        """helper function to remove a position"""
+    def _remove_pending_order(self, order: ExchangeOrder) -> None:
+        """Helper function to remove pending orders"""
 
-        del self.positions[symbol]
+        if order.reduce_only is False:
+            self.balance_free += order.amount_usd
+            self.balance_locked -= order.amount_usd
 
-    def _fetch_ohlcv(self, symbol: str) -> Dict[str, float]:
+        self.pending_orders.remove(order)
+
+        logger.debug("Canceled order with ID: %s.", order.id)
+        logger.debug("New free balance: %s/%s", self.balance_free, self.balance_total)
+
+    def _add_pending_orders(self, order: ExchangeOrder) -> bool:
+        """Add order to pending orders.
+
+        Usually for limit orders.
+        """
+
+        if order.reduce_only is False:
+            if order.amount_usd > self.balance_free:
+                logger.info("Position cannot be opened. Not enough capital.")
+                return False
+
+            # Calculate the locked capital because of the pending order
+            self.balance_free -= order.amount_usd
+            self.balance_locked += order.amount_usd
+
+        self.pending_orders.append(order)
+
+        logger.debug("Added order with ID: %s.", order.id)
+        logger.debug("New free balance: %s/%s", self.balance_free, self.balance_total)
+
+        return True
+
+    def _fetch_ohlcv(self, symbol: str) -> Union[Ohlcv, None]:
         """Fetch the ticker data for a given symbol at the current date.
 
         Args:
@@ -367,63 +472,83 @@ class MockExchange(ccxt.bitget):
             vol = df.iloc[-1]["volume"].item()
             timestamp = df.index[-1]
 
-            return {
-                "symbol": symbol,
-                "time": timestamp,
-                "close": close_price,
-                "low": low_price,
-                "high": high_price,
-                "volume": vol,
-            }
-        else:
-            logger.warning("No data for symbol: %s on date: %s", symbol, self.current_date)
-            return {}
+            return Ohlcv(symbol=symbol, time=timestamp, close=close_price, low=low_price, high=high_price, volume=vol)
 
-    def _create_position(self, symbol: str, order: dict) -> None:
-        """Helper function to open a position.
+        logger.warning("No data for symbol: %s on date: %s", symbol, self.current_date)
+        return None
+
+    def get_fee_pct(self, symbol: str, order_type: Literal["market, limit"]) -> float:
+        """Get fees for the symbol."""
+
+        if order_type == "limit":
+            return self.order_fees.get(symbol).get("maker")
+
+        return self.order_fees.get(symbol).get("taker")
+
+    def _add_position(self, order: ExchangeOrder) -> bool:
+        """Helper function to add a position.
 
         Args:
-        symbol (str): symbol such as "BTC/USDT:USDT"
-        order (dict); the order for which a position should be created.
+        order (Order); the order for which a position should be created.
         """
 
-        order_type = order.get("order_type")
-        if order_type == "market":
-            entry_price = self.fetch_ticker(symbol)["last"]
-            amount_usd = entry_price * order["total"]
-        elif order_type == "limit":
-            entry_price = order.get("price")
-            # If it's a limit order, reduce the reserved balance when the order is filled
-            reserved_amount = entry_price * order["total"]
-            self.locked_balance -= reserved_amount
-            amount_usd = 0  # thats why we set the amount_usd to 0 because the capital got locked already
+        # get order price and amount in usd
+        if order.type == "market":
+            order.price = self.fetch_ticker(order.symbol)["last"]
+            order.amount_usd = order.price * order.amount
+
+        if order.amount_usd > self.balance_free:
+            logger.info("Position cannot be opened. Not enough capital.")
+            return False
 
         # calculate fee
-        fee = (
-            self.order_fees.get(symbol).get("maker")
-            if order_type == "limit"
-            else self.order_fees.get(symbol).get("taker")
-        )
-        fee_amount_usd_opening = amount_usd * fee
+        order.fee_usd = -order.amount_usd * self.get_fee_pct(order.symbol, order.type)
 
-        position = {
-            "entry_price": entry_price,
-            "open_date": self.current_date,
-            "opening_fee": fee_amount_usd_opening,
-        }
+        # add to existing position if one exists
+        if order.symbol in self.positions:
+            position = self.positions[order.symbol]
 
-        position.update(order)
+            if (position.holdSide == "long" and order.side == "sell") or (
+                position.holdSide == "short" and order.side == "buy"
+            ):
+                logger.info("Currently its not supported to reduce a position.")
+                return False
+
+            # add order to position
+            position.orders.append(order)
+
+        # otherwise create a new position
+        else:
+            self.positions[order.symbol] = Position(
+                symbol=order.symbol, holdSide="long" if order.side == "buy" else "short", orders=[order]
+            )
 
         # update balance
-        self.balance_total -= fee_amount_usd_opening
-        self.balance_free = self.balance_free - fee_amount_usd_opening - amount_usd
-        self.balance_total = round(self.balance_total, 3)
-        self.balance_free = round(self.balance_free, 3)
+        self.balance_total += order.fee_usd  # round(order.fee, 3)
+        self.balance_free -= order.amount_usd - order.fee_usd  # round(order.amount_usd - order.fee, 3)
 
-        # assert self.balance_free >= 0
+        # add a transaction
+        if order.side == "buy":
+            transaction_type = "Open Long"
+        else:
+            transaction_type = "Open Short"
 
-        # add to position
-        self.positions[symbol] = position
+        self.transaction_history.append(
+            Transaction(
+                time=self.current_date,
+                symbol=order.symbol,
+                type=transaction_type,
+                fee_usd=order.fee_usd,
+                price=order.price,
+                quantity=order.amount,
+                profit_usd=0,
+                profit_pct=0,
+                balance=self.balance_total,
+                order=order,
+            )
+        )
+
+        return True
 
     ####### the following functions are implemented in ccxt #######
 
@@ -457,7 +582,7 @@ class MockExchange(ccxt.bitget):
             List[Dict[str, Union[str, float]]]: A list of dictionaries containing open position details.
         """
 
-        return [{"symbol": symbol, "info": info} for symbol, info in self.positions.items()]
+        return [{"symbol": symbol, "info": info.model_dump()} for symbol, info in self.positions.items()]
 
     def fetch_position(self, symbol: str) -> Dict[str, Union[str, float]]:
         """Fetch the position for a given symbol.
@@ -469,7 +594,10 @@ class MockExchange(ccxt.bitget):
             Dict[str, Union[str, float]]: A dictionary containing the position details.
         """
 
-        return {"symbol": symbol, "info": self.positions.get(symbol, {})}
+        if symbol in self.positions:
+            return {"symbol": symbol, "info": self.positions.get(symbol).model_dump()}
+
+        return {"symbol": symbol, "info": {}}
 
     def create_order(
         self,
@@ -480,151 +608,134 @@ class MockExchange(ccxt.bitget):
         price: Optional[float] = None,
         params: Optional[Dict] = None,
     ) -> Dict[str, Union[str, float]]:
-        """Create a new order."""
+        """Create a new order.
 
-        order_id = self._generate_order_id()  # Generate a unique order ID
+        Note: it is currently not supported to close an open position via create order.
+        For doing that close_position() should be used.
+        """
 
-        # for key in ["stopLoss", "takeProfit"]:
-        #    if key not in params:
-        #        raise ValueError(f"Provide {key} in the params when creating an order.")
+        order_id = self._generate_order_id()
 
-        order = {
-            "id": order_id,
-            "order_type": type,
-            "symbol": symbol,
-            "type": type,
-            "side": side,
-            "holdSide": "long" if side == "buy" else "short",
-            "total": amount,
-            "price": price,
-        }
+        order = ExchangeOrder(
+            symbol=symbol,
+            time=self.current_date,
+            type=type,
+            side=side,
+            amount=amount,
+            price=price,
+            params=params,
+            id=order_id,
+        )
 
-        order.update(params)
+        if price and order.type == "limit":
+            order.amount_usd = order.price * order.amount
 
-        # Add limit order to pending orders
-        if type == "limit":
-            if price is None:
-                raise ValueError("Limit price must be specified for limit orders.")
+        if order.type == "limit":
+            result = self._add_pending_orders(order)
+        else:  # market oder open position straight away
+            result = self._add_position(order)
 
-            # Calculate the reserved amount for the limit order
-            reserved_amount = price * amount
+        # Helper function for adding SL/TP orders
+        def add_linked_order(order_type: str, trigger_key: str):
+            if trigger_key in params and "triggerPrice" in params[trigger_key]:
+                linked_order = ExchangeOrder(
+                    symbol=symbol,
+                    time=self.current_date,
+                    type=order_type,
+                    side=side,
+                    amount=amount,
+                    price=params[trigger_key]["triggerPrice"],
+                    linked_id=order_id,
+                    id=self._generate_order_id(),
+                    reduce_only=True,
+                )
+                self._add_pending_orders(linked_order)
 
-            # Update the balances to reflect the reserved amount
-            self.balance_free -= reserved_amount
-            self.locked_balance += reserved_amount
+        # Add Stop Loss (SL) and Take Profit (TP) orders
+        add_linked_order("SL-market", "stopLoss")
+        add_linked_order("TP-market", "takeProfit")
 
-            self.pending_orders.append(order)
-
-        # Handle market orders. Here we create the position straight away
-        else:
-            self._create_position(symbol, order)
-
-            logger.info(
-                "Created market order for symbol: %s, side: %s, amount: %s at price: %s", symbol, side, amount, price
-            )
-
-        return order
+        # Return the created order's details
+        return order.model_dump() if result else None
 
     def close_position(
         self,
         symbol: str,
-        side: str,
-        stop_loss_triggered: Optional[bool] = False,
-        take_profit_triggered: Optional[bool] = False,
+        side: Literal["long", "short"],
+        order_ids: Optional[List[str]] = None,
     ) -> None:
         """Close an existing position and calculate profit.
 
         Args:
             symbol (str): The trading symbol.
             side (str): The side of the position to close ("long" or "short").
-            stop_loss_triggered (Optional[bool]): if a stop loss is triggered, the exit price is the stop loss price
-            take_profit_triggered (Optional[bool]): if a take profit is triggered, the exit price is the take profit price
 
         Returns:
             None
         """
 
-        if symbol in self.positions:
-            position = self.positions[symbol]
-            entry_price = position["entry_price"]
-
-            amount = position["total"]
-            hold_side = position["holdSide"]
-            stop_loss_price = position.get("stopLoss", {}).get("triggerPrice", None)
-            take_profit_price = position.get("takeProfit", {}).get("triggerPrice", None)
-            order_type = position["order_type"]
-            fee_amount_usd_opening = position["opening_fee"]
-
-            # determine exit price. if stop_loss or take_profit is triggered, its always a limit order and therefore maker fees
-            if stop_loss_triggered:
-                exit_price = stop_loss_price
-                fee = self.order_fees.get(symbol).get("taker")
-            elif take_profit_triggered:
-                exit_price = take_profit_price
-                fee = self.order_fees.get(symbol).get("taker")
-            else:
-                exit_price = self.fetch_ticker(symbol)["last"]
-                fee = (
-                    self.order_fees.get(symbol).get("maker")
-                    if order_type == "limit"
-                    else self.order_fees.get(symbol).get("taker")
-                )
-
-            if exit_price is None:
-                logger.warning("No price information available for %s", symbol)
-                return None
-
-            # Calculate profit
-            if hold_side == "long":
-                profit = (exit_price - entry_price) * amount
-                profit_percent = (exit_price - entry_price) / entry_price
-            else:
-                profit = (entry_price - exit_price) * amount
-                profit_percent = (entry_price - exit_price) / entry_price
-
-            # TODO: simplification always assuming the same order type for an open and close
-            amount_usd = exit_price * amount  # this is wrong
-            fee_amount_usd_closing = amount_usd * fee
-            fee_amount_usd = fee_amount_usd_closing + fee_amount_usd_opening
-            net_profit = profit - fee_amount_usd
-            net_profit_percent = profit_percent - fee
-
-            # Update balance
-            self.balance_total = self.balance_total - fee_amount_usd_closing + profit
-            self.balance_free = self.balance_free - fee_amount_usd_closing + (entry_price * amount) + profit
-            self.balance_total = self.balance_total
-            self.balance_free = self.balance_free
-
-            # assert self.balance_free <= self.balance_total
-
-            logger.info("-------------------------------------")
-            logger.info("Profit %s", profit)
-            logger.info("Updated balance: %s", self.fetch_balance())
-            logger.info("-------------------------------------")
-
-            # Log the trade
-            trade = {
-                "exit_price": exit_price,
-                "profit": profit,
-                "profit_percent": profit_percent,
-                "net_profit": net_profit,
-                "net_profit_percent": net_profit_percent,
-                "closing_fee": fee_amount_usd_closing,
-                "total_fee": fee_amount_usd,
-                "total_balance": round(self.balance_total, 2),
-                "free_balance": round(self.balance_free, 2),
-                "close_date": self.current_date,
-            }
-
-            # add the position information to the trade and add it to the history
-            trade.update(position)
-            self.trade_history.append(trade)
-
-            # Remove position
-            self._remove_position(symbol)
-
-        else:
+        if symbol not in self.positions:
             logger.warning("No position to close for symbol: %s, side: %s", symbol, side)
+            return
+
+        exit_price = self.fetch_ticker(symbol)["last"]
+
+        if exit_price is None:
+            logger.warning("No price information available for %s", symbol)
+            return None
+
+        position = self.positions[symbol]
+        profit = 0
+
+        # close position by iterating over all individual executed orders
+        for exec_order in position.orders:
+
+            # if order_ids is defined skip orders which don't match the defined ids
+            if order_ids and exec_order not in order_ids:
+                continue
+
+            if position.holdSide == "long":
+                profit = (exit_price - exec_order.price) * exec_order.amount
+                profit_pct = (exit_price - exec_order.price) / exec_order.price
+                transaction_type = "Close Long"
+            else:  # short
+                profit = (exec_order.price - exit_price) * exec_order.amount
+                profit_pct = (exec_order.price - exit_price) / exec_order.price
+                transaction_type = "Close Short"
+
+            fee_usd = -(exit_price * exec_order.amount) * self.get_fee_pct(symbol, order_type="market")
+
+            position_size_usd = exec_order.amount_usd
+
+            position.orders.remove(exec_order)
+
+            self.balance_total += profit + fee_usd
+            self.balance_free += position_size_usd + profit + fee_usd
+            self.balance_locked -= position_size_usd
+
+            # add transaction
+            self.transaction_history.append(
+                Transaction(
+                    time=self.current_date,
+                    symbol=symbol,
+                    type=transaction_type,
+                    fee_usd=fee_usd,
+                    price=exit_price,
+                    quantity=exec_order.amount,
+                    profit_usd=profit,
+                    profit_pct=profit_pct,
+                    balance=self.balance_total,
+                )
+            )
+
+        # del position symbol if no open positions
+        if len(position.orders) == 0:
+            del self.positions[symbol]
+
+        logger.info("-------------------------------------")
+        logger.info("Profit %s", profit)
+        logger.info("Updated balance: %s", self.fetch_balance())
+        logger.info("-------------------------------------")
 
     def fetch_balance(self) -> dict:
         """Fetch the current balance.
@@ -652,8 +763,8 @@ class MockExchange(ccxt.bitget):
         """
 
         if symbol:
-            return [order for order in self.pending_orders if order["symbol"] == symbol]
-        return self.pending_orders
+            return [order.model_dump() for order in self.pending_orders if order.symbol == symbol]
+        return [order.model_dump() for order in self.pending_orders]
 
     def cancel_orders(self, order_ids: List[str], symbol: str) -> None:
         """Cancel multiple open orders by their IDs and symbol.
@@ -664,20 +775,11 @@ class MockExchange(ccxt.bitget):
         """
 
         orders_to_remove = [
-            order for order in self.pending_orders if (order["id"] in order_ids and order["symbol"] == symbol)
+            order for order in self.pending_orders if (order.id in order_ids and order.symbol == symbol)
         ]
 
         for order in orders_to_remove:
-            # Calculate the reserved amount to be released
-            reserved_amount = order["price"] * order["total"]
-
-            # Adjust the balances
-            self.balance_free += reserved_amount
-            self.locked_balance -= reserved_amount
-
-            # Remove the order from pending orders
-            self.pending_orders.remove(order)
-            logger.info("Canceled order with ID: %s.", order["id"])
+            self._remove_pending_order(order)
 
         logger.info("Canceled %d orders for symbol %s.", len(orders_to_remove), symbol)
 

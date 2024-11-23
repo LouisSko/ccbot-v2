@@ -1,9 +1,10 @@
 import math
 import os
+import time
 from typing import List, Literal, Optional
 
 from src.common_packages import create_logger
-from src.core.engine import TradeSignal, TradingEngine
+from src.core.engine import Order, TradeSignal, TradingEngine
 
 logger = create_logger(
     log_level=os.getenv("LOGGING_LEVEL", "INFO"),
@@ -61,30 +62,31 @@ class CCXTFuturesTradingEngine(TradingEngine):
 
         logger.info("Completed setting trading settings for all provided symbols.")
 
-    def log_open_positions(self):
+    def log_open_positions(self) -> List[str]:
         """Function to log all open positions."""
 
         positions = self.config.exchange.fetch_positions()
         log_messages = []
-        self.symbols_with_open_positions = []
+        symbols = []
         if not positions:
             log_messages.append("No open position")
         else:
             log_messages.append("Log open positions:")
             for position in positions:
                 symbol = position["info"].get("symbol", "N/A")
-                self.symbols_with_open_positions.append(symbol)
-
                 hold_side = position["info"].get("holdSide", "N/A")
                 position = position["info"].get("total", "N/A")
                 message = f"Symbol: {symbol}, holdSide: {hold_side}, PositionSize: {position}"
                 log_messages.append(message)
+                symbols.append(symbol)
 
         balance = self.config.exchange.fetch_balance()
 
         # Join all messages with a newline and log them as a single entry
         logger.info(" ".join(log_messages))
         logger.info("Balance: %s", balance)
+
+        return symbols
 
     def determine_batch_order_sizes(
         self,
@@ -95,11 +97,9 @@ class CCXTFuturesTradingEngine(TradingEngine):
         """
         Determine the position sizes for all trade signals collectively, considering open positions and total balance.
 
-        NOTE: the current implementation only allows a single trade_signal for each symbol.
-
         Args:
             trade_signals (List[TradeSignal]): A list of trade signals for multiple symbols.
-            method (str): The method to use for determining the order size. Options: 'free_balance', 'total_balance', 'risk_based'.
+            method (str): The method to use for determining the order size. Options: 'balance', 'risk_based'.
             risk_pct (float): The percentage of the balance to risk.
 
         Returns:
@@ -112,9 +112,11 @@ class CCXTFuturesTradingEngine(TradingEngine):
                 ticker_cache[symbol] = self.config.exchange.fetch_ticker(symbol)["last"]
             return ticker_cache[symbol]
 
-        def calculate_stop_loss_pct(trade_signal: TradeSignal, entry_price: float) -> Optional[float]:
+        def calculate_stop_loss_pct(trade_signal: TradeSignal) -> Optional[float]:
             """Calculates the stop loss percentage for a given trade signal."""
+
             if trade_signal.stop_loss_price:
+                entry_price = signal.limit_price or ticker_cache[signal.symbol]
                 return abs((entry_price - trade_signal.stop_loss_price) / entry_price)
             return None
 
@@ -128,79 +130,61 @@ class CCXTFuturesTradingEngine(TradingEngine):
                 return (balance["total"] * risk_pct) / stop_loss_pct
             return 0.0
 
-        def calculate_scaling_factor():
-            """calculates the scaling factor"""
-            # Cap total allocation at available balance
-            if total_allocated_usd > balance["free"]:
-                scale_factor = balance["free"] / total_allocated_usd
-            else:
-                scale_factor = 1.0
+        def calculate_scaling_factor(total_allocated_usd: float, free_balance: float) -> float:
+            """Calculates a scaling factor to ensure total allocation doesn't exceed available balance."""
+            return min(1.0, free_balance / total_allocated_usd) if total_allocated_usd > 0 else 1.0
 
-            return scale_factor
-
-        # Fetch balance and log open positions
+        # Fetch balance and initialize variables
         balance = self.config.exchange.fetch_balance()["USDT"]
         logger.info("Available balance: %s", balance["free"])
+        free_balance = balance["free"]
 
-        # Initialize total allocated USD for all signals
-        total_allocated_usd = 0.0
-
-        # Cache for fetched ticker prices
         ticker_cache = {}
-
-        # Cache for calculated USD order sizes
+        total_allocated_usd = 0.0
         usd_order_sizes = {}
 
-        for trade_signal in trade_signals:
-            entry_price = fetch_cached_ticker(trade_signal.symbol, ticker_cache)
+        # Calculate USD order sizes and total allocation
+        for signal in trade_signals:
 
-            if entry_price is None:
-                usd_order_sizes[trade_signal.symbol] = 0
+            # check whether there is currently an entry for the coin
+            current_price = fetch_cached_ticker(signal.symbol, ticker_cache)
+            if current_price is None:
+                usd_order_sizes[id(signal)] = 0.0
             else:
-                stop_loss_pct = calculate_stop_loss_pct(trade_signal, entry_price)
-                usd_order_sizes[trade_signal.symbol] = calculate_usd_order_size(
-                    balance, method, stop_loss_pct, risk_pct
-                )
-                total_allocated_usd += usd_order_sizes[trade_signal.symbol]
+                stop_loss_pct = calculate_stop_loss_pct(signal)
+                usd_order_size = calculate_usd_order_size(balance, method, stop_loss_pct, risk_pct)
+                usd_order_sizes[id(signal)] = usd_order_size
+                total_allocated_usd += usd_order_size
 
-        scale_factor = calculate_scaling_factor()
+        # Apply scaling factor
+        scale_factor = calculate_scaling_factor(total_allocated_usd, free_balance)
 
-        # Second loop to assign the scaled USD order sizes to each trade signal
-        for trade_signal in trade_signals:
+        # Assign scaled USD order sizes to trade signals
+        for signal in trade_signals:
+            usd_order_size = usd_order_sizes[id(signal)] * scale_factor
 
-            # Adjust the USD order size based on the scale factor
-            usd_order_size = usd_order_sizes[trade_signal.symbol] * scale_factor
+            # Calculate position size in base currency (e.g., BTC)
+            entry_price = signal.limit_price or ticker_cache[signal.symbol]
+            amount = usd_order_size / entry_price
 
-            if usd_order_size == 0:
-                trade_signal.order_amount = None
-                continue
-
-
-            # Calculate the position size in base currency (e.g., BTC)
-            amount = usd_order_size / ticker_cache[trade_signal.symbol]
-
-            # Ensure amount is above minimum order size
-            min_amount = self.order_details.get(trade_signal.symbol).get("min_amount")
-            
-            if min_amount and amount < min_amount:
+            # Validate and adjust amount
+            min_amount = self.order_details.get(signal.symbol, {}).get("min_amount", 0)
+            if amount < min_amount:
                 logger.warning(
                     "Specified amount (%s) is smaller than the minimum order quantity (%s) for symbol (%s). Skipping.",
                     amount,
                     min_amount,
-                    trade_signal.symbol,
+                    signal.symbol,
                 )
-                trade_signal.order_amount = None
+                signal.order_amount = None
                 continue
 
-            # Round to the required precision
-            precision = self.order_details.get(trade_signal.symbol).get("precision")
+            precision = self.order_details.get(signal.symbol, {}).get("precision", 8)
             amount = round_down(amount, precision)
 
             # Set the determined order size in the trade signal
-            trade_signal.order_amount = amount
-            logger.info(
-                "Position size determined for symbol %s: %s (USD: %s)", trade_signal.symbol, amount, usd_order_size
-            )
+            signal.order_amount = amount
+            logger.info("Position size determined for symbol %s: %s (USD: %s)", signal.symbol, amount, usd_order_size)
 
         return trade_signals
 
@@ -216,39 +200,39 @@ class CCXTFuturesTradingEngine(TradingEngine):
         logger.info("Trade signals: %s", trade_signals)
 
         # Log current open positions
-        self.log_open_positions()
+        symbols = self.log_open_positions()
 
-        # Close all open orders for the symbols in trade signals, if applicable
+        # Close all open orders for the symbols in trade signals
         for trade_signal in trade_signals:
             open_orders = self.config.exchange.fetch_open_orders(symbol=trade_signal.symbol)
             if open_orders:
                 self.config.exchange.cancel_all_orders(symbol=trade_signal.symbol)
 
             # Remove symbol from the list of open positions if it exists
-            if trade_signal.symbol in self.symbols_with_open_positions:
-                self.symbols_with_open_positions.remove(trade_signal.symbol)
+            if trade_signal.symbol in symbols:
+                symbols.remove(trade_signal.symbol)
 
-        # Close positions for symbols where no prediction exists
-        for symbol in list(self.symbols_with_open_positions):
+        # Close positions for remaining symbols where no prediction exists
+        for symbol in symbols:
             hold_side = self._determine_position(symbol=symbol)
-            self._close_trade(symbol=symbol, side=hold_side)
+            self._close_trade(symbol=symbol, hold_side=hold_side)
 
         # Determine order sizes for all trade signals in batch
-        trade_signals = self.determine_batch_order_sizes(trade_signals, method="risk_based", risk_pct=0.01)
+        trade_signals = self.determine_batch_order_sizes(trade_signals, method="balance", risk_pct=0.2)
 
         # Open new trades or reverse existing ones based on predictions
         for trade_signal in trade_signals:
             if trade_signal.order_amount is None:
                 continue
 
+            mapping = {"long": "buy", "short": "sell"}
             hold_side = self._determine_position(symbol=trade_signal.symbol)
-
-            if trade_signal.position_side == hold_side:
+            if trade_signal.position_side == mapping.get(hold_side):
                 logger.info("Keeping current position for symbol: %s with side: %s", trade_signal.symbol, hold_side)
             else:
                 if hold_side:
                     logger.info("Reversing position for symbol: %s", trade_signal.symbol)
-                    self._close_trade(symbol=trade_signal.symbol, side=hold_side)
+                    self._close_trade(symbol=trade_signal.symbol, hold_side=hold_side)
 
                 # Place a new order
                 self._create_order(trade_signal)
@@ -256,21 +240,56 @@ class CCXTFuturesTradingEngine(TradingEngine):
         # Log updated open positions
         self.log_open_positions()
 
-    def _close_trade(self, symbol: str, side: Literal["buy", "sell"]) -> None:
+    def execute_orders_simple(self, trade_signals: List[TradeSignal]):
+        """Places trades based on predictions from the model, after determining the batch order sizes.
+
+        This function always closes the full position at the open price
+        Args:
+            trade_signals (List[TradeSignal]): A list of TradeSignal objects, each containing trade details for a symbol.
+        """
+
+        # logger.info("+" * 50)
+        # logger.info("Trade signals: %s", trade_signals)
+
+        # Log current open positions
+        self.log_open_positions()
+
+        # close all open positions
+        positions = self.config.exchange.fetch_positions()
+        for position in positions:
+            symbol = position["info"].get("symbol")
+            hold_side = position["info"].get("holdSide")
+            self._close_trade(symbol=symbol, hold_side=hold_side)
+
+        # Close all open orders for the symbols in trade signals. Alternatively we could disable all orders
+        for trade_signal in trade_signals:
+            open_orders = self.config.exchange.fetch_open_orders(symbol=trade_signal.symbol)
+            if open_orders:
+                self.config.exchange.cancel_all_orders(symbol=trade_signal.symbol)
+
+        # Determine order sizes for all trade signals in batch
+        trade_signals = self.determine_batch_order_sizes(trade_signals, method="balance", risk_pct=0.1)
+
+        # Open new orders
+        for trade_signal in trade_signals:
+            self._create_order(trade_signal)
+
+        # Log updated open positions
+        self.log_open_positions()
+
+    def _close_trade(self, symbol: str, hold_side: Literal["long", "short"]) -> None:
         """Closes a trade.
 
         Args:
             symbol (str): The trading symbol for which the position should be closed.
-            side (str): The side of the position to close ('buy', 'sell') -> this needs to be converted to "long", "short"
+            hold_side (str): The side of the position to close ('buy', 'sell') -> this needs to be converted to "long", "short"
 
         Returns:
             None
         """
 
-        action_mapping = {"buy": "long", "sell": "short"}
-
-        self.config.exchange.close_position(symbol=symbol, side=action_mapping.get(side))
-        logger.info("Closed position for symbol: %s with side: %s", symbol, side)
+        self.config.exchange.close_position(symbol=symbol, side=hold_side)
+        logger.info("Closed position for symbol: %s with side: %s", symbol, hold_side)
 
     def _create_order(self, trade_signal: TradeSignal) -> None:
         """Creates an order.
@@ -279,11 +298,8 @@ class CCXTFuturesTradingEngine(TradingEngine):
             trade_signal (TradeSignal): the trade signal
         """
 
-        logger.info(50 * "-")
-        logger.info("create new order")
-
         if trade_signal.order_amount is None:
-            logger.info("Amount is None. No order gets placed.")
+            logger.info("Amount is None for %s. No order gets placed.", trade_signal.symbol)
             return
 
         params = {"hedged": True, "marginMode": "isolated"}
@@ -294,25 +310,21 @@ class CCXTFuturesTradingEngine(TradingEngine):
         if trade_signal.take_profit_price:
             params["takeProfit"] = {"triggerPrice": trade_signal.take_profit_price}
 
-        # Create the order dictionary
-        order = {
-            "symbol": trade_signal.symbol,
-            "type": trade_signal.order_type,
-            "side": trade_signal.position_side,
-            "amount": trade_signal.order_amount,
-        }
+        order = Order(
+            symbol=trade_signal.symbol,
+            type=trade_signal.order_type,
+            side=trade_signal.position_side,
+            amount=trade_signal.order_amount,
+            price=trade_signal.limit_price if trade_signal.order_type == "limit" else None,
+            params=params,
+        )
 
-        # If it's a limit order, include the price
-        if trade_signal.order_type == "limit":
-            order["price"] = trade_signal.limit_price
-
-        # Place the order with the exchange
-        self.config.exchange.create_order(**order, params=params)
+        # Place the order on the exchange
+        self.config.exchange.create_order(**order.model_dump())
 
         logger.info("Created order: %s", order)
-        logger.info(50 * "-")
 
-    def _determine_position(self, symbol: str) -> Literal["buy", "sell", "no_trade"]:
+    def _determine_position(self, symbol: str) -> Literal["long", "short", "no_trade"]:
         """
         Determines the current trading position for a given symbol.
 
@@ -323,17 +335,12 @@ class CCXTFuturesTradingEngine(TradingEngine):
             Literal: The current action based on the open position. Possible values are 'buy', 'sell', or 'no_trade'.
         """
 
-        action_mapping = {"long": "buy", "short": "sell"}
-
         current_position = self.config.exchange.fetch_position(symbol=symbol)
 
         if current_position["info"] == {}:  # no position is open
-            current_action = "no_trade"
+            return "no_trade"
         else:  # position is open
-            position_side = current_position["info"].get("holdSide")  # either 'long' or 'short'
-            current_action = action_mapping.get(position_side, "no_trade")
-
-        return current_action
+            return current_position["info"].get("holdSide")  # either 'long' or 'short'
 
 
 def count_decimal_places(value: float) -> int:

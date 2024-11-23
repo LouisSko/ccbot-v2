@@ -98,6 +98,7 @@ class Prediction(BaseModel):
     prediction_type: Literal["regression", "direction", "volatility"]
     prediction: Union[int, float]
     ground_truth: Optional[Union[int, float]] = None
+    execution_price: Optional[float] = None # the price where the trade should get executed. None refers to immediate execution
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
