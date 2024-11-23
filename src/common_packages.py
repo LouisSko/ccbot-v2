@@ -91,24 +91,31 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 
-def timestamp_decoder(obj: dict):
-    """Convert strings back to pd.Timestamp or pd.Timedelta during JSON decoding."""
+def timestamp_decoder(obj):
+    """Convert strings back to pd.Timestamp or pd.Timedelta during JSON decoding.
+
+    Handles nested structures like dictionaries, lists, and tuples.
+    """
 
     # Regular expression to match Timedelta strings (e.g., "4h", "15min", "1d")
     timedelta_pattern = re.compile(r"^(\d+)([a-z]+)$")
 
-    for key, value in obj.items():
+    def process_value(value):
+        """Process individual value to convert to Timestamp or Timedelta."""
         if isinstance(value, str):
-            # Check if the value matches a Timedelta pattern (e.g., "4h", "15min", "1d")
             match = timedelta_pattern.match(value)
             if match:
-                # Convert to pd.Timedelta if it matches the pattern
-                obj[key] = pd.Timedelta(value)
-            else:
-                # If not a Timedelta pattern, try parsing as a Timestamp
-                try:
-                    obj[key] = pd.Timestamp(value, tz="utc")
-                except ValueError:
-                    # If it fails, leave it as a string
-                    pass
-    return obj
+                return pd.Timedelta(value)
+            try:
+                return pd.Timestamp(value, tz="utc")
+            except ValueError:
+                return value
+        elif isinstance(value, dict):
+            return {k: process_value(v) for k, v in value.items()}
+        elif isinstance(value, list):
+            return [process_value(item) for item in value]
+        elif isinstance(value, tuple):
+            return tuple(process_value(item) for item in value)
+        return value
+
+    return process_value(obj)
