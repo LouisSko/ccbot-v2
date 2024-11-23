@@ -163,6 +163,8 @@ class DataMerger(BasePipelineComponent):
 
             # Merge the dataframes for the symbol along the columns (axis=1)
             result_df = pd.concat(df_list, join="inner", axis=1)
+            # Get rid of duplicate columns
+            result_df = result_df.loc[:, ~result_df.columns.duplicated()]
 
             if not result_df.empty and "close" in result_df.columns:
                 merged_data[symbol] = result_df
