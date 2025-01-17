@@ -87,10 +87,11 @@ class ExchangeDatasource(Datasource):
         all_symbols = [symbol for symbol in tickers if symbol.endswith("USDT")]
 
         # fetch the data for all symbols and select the n best coins with the highest volume
-        result = self._fetch_ohlcv(symbols=all_symbols, limit=self.config.current_data_scrape_limit, timeframe=pd.Timedelta("1d"))
+        result = self._fetch_ohlcv(
+            symbols=all_symbols, limit=self.config.current_data_scrape_limit, timeframe=pd.Timedelta("1d")
+        )
 
         logger.info("Fetched symbols: %s", list(result.data))
-
 
         volumes = []
         for symbol, df in result.data.items():
@@ -117,7 +118,7 @@ class ExchangeDatasource(Datasource):
         for symbol, df in self.mock_data.data.items():
             if symbols is None or symbol in symbols:
                 df = df.loc[: self.simulation_current_date].iloc[:-1].copy()
-                
+
                 # only return the symbols with enough data
                 if len(df) >= self.config.current_data_scrape_limit:
                     data[symbol] = df
@@ -203,11 +204,9 @@ class ExchangeDatasource(Datasource):
             logger.warning("No symbols provided. Trading settings can't be adjusted.")
             return Data(object_ref=self.config.object_id, data=data)
 
-
         if not isinstance(symbols, list) or not all(isinstance(symbol, str) for symbol in symbols):
             logger.error("Invalid symbols format. Symbols should be a list of strings.")
             return Data(object_ref=self.config.object_id, data=data)
-
 
         # Current time in milliseconds
         current_time_in_ms = int(time.time() * 1000)
@@ -324,7 +323,8 @@ class ExchangeDatasource(Datasource):
                 else:
                     since = ohlcv[-1][0] + 1
 
-                if len(ohlcv) == 1 or (until is not None and ohlcv[-1][0] >= until):
+                # if len(ohlcv) == 1 or (until is not None and ohlcv[-1][0] >= until):
+                if until is not None and ohlcv[-1][0] >= until:
                     break
 
         else:
